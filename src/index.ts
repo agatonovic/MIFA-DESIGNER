@@ -4,15 +4,15 @@ export {
   FLOW_KINDS,
   SYMBOLS,
   SYMBOL_SIZE,
+  blankFlow,
+  buildSheet,
   createId,
   edgeRoute,
   emptyDocument,
   exampleDocument,
-  isPlaceholderLabel,
   parseMifaDocument,
-  pathThroughEdge,
-  pathThroughNode,
+  pathForFlows,
   snap,
-  symbolLabel,
 } from "./document";
-export type { FlowKind, MifaDocument, MifaEdge, MifaNode, PathSet, SymbolId } from "./document";
+export type { Flow, FlowKind, MifaDocument, ProjectInfo, Sheet, SheetEdge, SheetNode, SymbolId } from "./document";
+export { documentToWorkbook, downloadWorkbook, readWorkbook, workbookToDocument } from "./excel";

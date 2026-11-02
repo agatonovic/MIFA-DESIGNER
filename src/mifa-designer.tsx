@@ -1,91 +1,66 @@
 "use client";
 
 import { SymbolShape } from "./symbol-shape";
-import { Button, Hint, Input } from "./ui";
+import { Button, Input } from "./ui";
+import { cn } from "./cn";
 import {
-  FLOW_KINDS,
-  SYMBOLS,
-  SYMBOL_SIZE,
-  createId,
+  blankFlow,
+  buildSheet,
   edgeRoute,
   emptyDocument,
   exampleDocument,
-  isPlaceholderLabel,
   parseMifaDocument,
-  pathThroughEdge,
-  pathThroughNode,
+  pathForFlows,
   snap,
-  symbolLabel,
-  type FlowKind,
+  type Flow,
   type MifaDocument,
-  type MifaNode,
-  type SymbolId,
+  type ProjectInfo,
+  type SheetNode,
 } from "./document";
-import { cn } from "./cn";
-import { MousePointer2, Redo2, Spline, Square, Undo2 } from "lucide-react";
-import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
+import { downloadWorkbook, FLOW_COLUMNS, FLOW_GROUPS, readWorkbook } from "./excel";
+import { Redo2, Undo2 } from "lucide-react";
+import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 
-const STORAGE_KEY = "mifa.canvas.v1";
-const SHEET = { width: 2200, height: 1280 };
+const STORAGE_KEY = "mifa.canvas.v2";
 
-type Tool = "select" | "add" | "connect";
-type Mode = "design" | "preview";
-type Selection = { kind: "node" | "edge"; id: string } | null;
 type History = { past: MifaDocument[]; present: MifaDocument; future: MifaDocument[] };
+type Mode = "design" | "preview";
 
-const FLOW_STROKE: Record<FlowKind, { stroke: string; dash?: string }> = {
+const FLOW_STROKE: Record<"material" | "information" | "empty", { stroke: string; dash?: string }> = {
   material: { stroke: "#202124" },
   information: { stroke: "#1b4f9c", dash: "5 4" },
   empty: { stroke: "#5f6368", dash: "7 4" },
 };
 
+const BOOL_KEYS = new Set<keyof Flow>(["direct", "unloadingBuffer", "kitting", "sequencing"]);
+
 function commitHistory(history: History, next: MifaDocument): History {
-  if (next === history.present) return history;
   return { past: [...history.past, history.present].slice(-50), present: next, future: [] };
 }
 
 export function MifaDesigner() {
   const [ready, setReady] = useState(false);
   const [history, setHistory] = useState<History>({ past: [], present: exampleDocument(), future: [] });
-  const [tool, setTool] = useState<Tool>("select");
   const [mode, setMode] = useState<Mode>("design");
-  const [flowKind, setFlowKind] = useState<FlowKind>("material");
-  const [stamp, setStamp] = useState<SymbolId>("rectangle");
-  const [selection, setSelection] = useState<Selection>(null);
-  const [connectFrom, setConnectFrom] = useState<string | null>(null);
-  const [hover, setHover] = useState<Selection>(null);
-  const [cursor, setCursor] = useState<{ x: number; y: number } | null>(null);
+  const [selectedFlowId, setSelectedFlowId] = useState<string | null>(null);
+  const [hoverFlowIds, setHoverFlowIds] = useState<string[] | null>(null);
+  const [notice, setNotice] = useState("");
   const sheetRef = useRef<HTMLDivElement>(null);
-  const dragRef = useRef<{
-    id: string;
-    offsetX: number;
-    offsetY: number;
-    origin: MifaDocument;
-    moved: boolean;
-  } | null>(null);
-  const resizeRef = useRef<{
-    id: string;
-    origin: MifaDocument;
-    width: number;
-    height: number;
-    x: number;
-    y: number;
-  } | null>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
+  const dragRef = useRef<{ id: string; offsetX: number; offsetY: number; origin: MifaDocument; moved: boolean } | null>(null);
 
   const doc = history.present;
-  const selectedNode = selection?.kind === "node" ? doc.nodes.find((node) => node.id === selection.id) ?? null : null;
-  const selectedEdge = selection?.kind === "edge" ? doc.edges.find((edge) => edge.id === selection.id) ?? null : null;
-  const activePath =
-    mode === "preview" && hover
-      ? hover.kind === "node"
-        ? pathThroughNode(doc, hover.id)
-        : pathThroughEdge(doc, hover.id)
-      : null;
+  const sheet = useMemo(() => buildSheet(doc), [doc]);
+  const activeFlowIds = mode === "preview" ? hoverFlowIds : selectedFlowId ? [selectedFlowId] : hoverFlowIds;
+  const activePath = activeFlowIds?.length ? pathForFlows(sheet, activeFlowIds) : null;
 
   useEffect(() => {
     try {
       const parsed = parseMifaDocument(JSON.parse(window.localStorage.getItem(STORAGE_KEY) || "null"));
-      if (parsed) setHistory({ past: [], present: parsed, future: [] });
+      if (parsed) {
+        setHistory({ past: [], present: parsed, future: [] });
+        setSelectedFlowId(null);
+      }
     } catch {
       /* keep the example */
     }
@@ -101,14 +76,19 @@ export function MifaDesigner() {
     setHistory((current) => commitHistory(current, recipe(current.present)));
   }
 
+  function replace(next: MifaDocument) {
+    setHistory((current) => commitHistory(current, next));
+    setSelectedFlowId(null);
+    setHoverFlowIds(null);
+    setNotice("");
+  }
+
   function undo() {
     setHistory((current) => {
       const previous = current.past.at(-1);
       if (!previous) return current;
       return { past: current.past.slice(0, -1), present: previous, future: [current.present, ...current.future] };
     });
-    setSelection(null);
-    setConnectFrom(null);
   }
 
   function redo() {
@@ -117,95 +97,52 @@ export function MifaDesigner() {
       if (!next) return current;
       return { past: [...current.past, current.present], present: next, future: current.future.slice(1) };
     });
-    setSelection(null);
-    setConnectFrom(null);
   }
 
-  function replace(next: MifaDocument) {
-    setHistory((current) => commitHistory(current, next));
-    setSelection(null);
-    setConnectFrom(null);
-    setHover(null);
-  }
-
-  function removeSelection() {
-    if (!selection) return;
-    const target = selection;
-    commit((current) => ({
-      ...current,
-      nodes: target.kind === "node" ? current.nodes.filter((node) => node.id !== target.id) : current.nodes,
-      edges: current.edges.filter((edge) =>
-        target.kind === "edge" ? edge.id !== target.id : edge.from !== target.id && edge.to !== target.id,
-      ),
-    }));
-    setSelection(null);
-    if (target.kind === "node" && connectFrom === target.id) setConnectFrom(null);
-  }
-
-  function nudge(dx: number, dy: number) {
-    if (selection?.kind !== "node") return;
-    const id = selection.id;
-    commit((current) => ({
-      ...current,
-      nodes: current.nodes.map((node) =>
-        node.id === id
-          ? {
-              ...node,
-              x: clamp(node.x + dx, 0, SHEET.width - node.width),
-              y: clamp(node.y + dy, 0, SHEET.height - node.height),
-            }
-          : node,
-      ),
-    }));
-  }
-
-  const actions = useRef({ undo, redo, removeSelection, nudge });
-  actions.current = { undo, redo, removeSelection, nudge };
+  const actions = useRef({ undo, redo });
+  actions.current = { undo, redo };
 
   useEffect(() => {
     function onKey(event: KeyboardEvent) {
       const target = event.target;
-      if (target instanceof HTMLElement && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)) {
-        return;
-      }
+      if (target instanceof HTMLElement && (target.tagName === "INPUT" || target.tagName === "SELECT" || target.tagName === "TEXTAREA")) return;
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "z") {
         event.preventDefault();
         if (event.shiftKey) actions.current.redo();
         else actions.current.undo();
-        return;
-      }
-      if (event.key === "Escape") {
-        setTool("select");
-        setConnectFrom(null);
-        setSelection(null);
-        return;
-      }
-      if (mode === "preview") return;
-      if (event.key.toLowerCase() === "v") setTool("select");
-      if (event.key.toLowerCase() === "a" && !event.metaKey && !event.ctrlKey) setTool("add");
-      if (event.key.toLowerCase() === "c" && !event.metaKey && !event.ctrlKey) setTool("connect");
-      if (event.key === "Backspace" || event.key === "Delete") actions.current.removeSelection();
-      const step = event.shiftKey ? 1 : 8;
-      if (event.key === "ArrowLeft") {
-        event.preventDefault();
-        actions.current.nudge(-step, 0);
-      }
-      if (event.key === "ArrowRight") {
-        event.preventDefault();
-        actions.current.nudge(step, 0);
-      }
-      if (event.key === "ArrowUp") {
-        event.preventDefault();
-        actions.current.nudge(0, -step);
-      }
-      if (event.key === "ArrowDown") {
-        event.preventDefault();
-        actions.current.nudge(0, step);
       }
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [mode]);
+  }, []);
+
+  function patchProject(key: keyof ProjectInfo, value: string) {
+    setHistory((current) => ({
+      ...current,
+      present: { ...current.present, project: { ...current.present.project, [key]: value } },
+    }));
+  }
+
+  function patchFlow(id: string, key: keyof Flow, value: string | boolean) {
+    setHistory((current) => ({
+      ...current,
+      present: {
+        ...current.present,
+        flows: current.present.flows.map((flow) => (flow.id === id ? { ...flow, [key]: value } : flow)),
+      },
+    }));
+  }
+
+  function addFlow() {
+    const flow = blankFlow(String(doc.flows.length + 1));
+    commit((current) => ({ ...current, flows: [...current.flows, flow] }));
+    setSelectedFlowId(flow.id);
+  }
+
+  function deleteFlow(id: string) {
+    commit((current) => ({ ...current, flows: current.flows.filter((flow) => flow.id !== id) }));
+    setSelectedFlowId((current) => (current === id ? null : current));
+  }
 
   function sheetPoint(event: { clientX: number; clientY: number }) {
     const rect = sheetRef.current?.getBoundingClientRect();
@@ -213,114 +150,12 @@ export function MifaDesigner() {
     return { x: event.clientX - rect.left, y: event.clientY - rect.top };
   }
 
-  function place(x: number, y: number) {
-    const size = SYMBOL_SIZE[stamp];
-    const node: MifaNode = {
-      id: createId("n"),
-      symbol: stamp,
-      label: symbolLabel(stamp),
-      width: size.width,
-      height: size.height,
-      x: clamp(snap(x - size.width / 2), 0, SHEET.width - size.width),
-      y: clamp(snap(y - size.height / 2), 0, SHEET.height - size.height),
-    };
-    commit((current) => ({ ...current, nodes: [...current.nodes, node] }));
-    setSelection({ kind: "node", id: node.id });
-  }
-
-  function connect(id: string) {
-    if (!connectFrom) {
-      setConnectFrom(id);
-      setSelection({ kind: "node", id });
-      return;
-    }
-    if (connectFrom === id) {
-      setConnectFrom(null);
-      return;
-    }
-    const source = connectFrom;
-    const existing = doc.edges.find((edge) => edge.from === source && edge.to === id);
-    const edgeId = existing?.id ?? createId("e");
-    commit((current) => {
-      if (existing) {
-        return {
-          ...current,
-          edges: current.edges.map((edge) => (edge.id === edgeId ? { ...edge, kind: flowKind } : edge)),
-        };
-      }
-      return { ...current, edges: [...current.edges, { id: edgeId, from: source, to: id, kind: flowKind, label: "" }] };
-    });
-    setConnectFrom(id);
-    setSelection({ kind: "edge", id: edgeId });
-  }
-
-  function chooseSymbol(symbol: SymbolId) {
-    setStamp(symbol);
-    if (!selectedNode) {
-      setSelection(null);
-      if (mode === "design") setTool("add");
-      return;
-    }
-    const id = selectedNode.id;
-    const size = SYMBOL_SIZE[symbol];
-    commit((current) => ({
-      ...current,
-      nodes: current.nodes.map((node) => {
-        if (node.id !== id) return node;
-        return {
-          ...node,
-          symbol,
-          width: size.width,
-          height: size.height,
-          x: clamp(snap(node.x + node.width / 2 - size.width / 2), 0, SHEET.width - size.width),
-          y: clamp(snap(node.y + node.height / 2 - size.height / 2), 0, SHEET.height - size.height),
-          label: isPlaceholderLabel(node.label) ? symbolLabel(symbol) : node.label,
-        };
-      }),
-    }));
-  }
-
-  function opacityFor(kind: "node" | "edge", id: string) {
-    if (!activePath) return 1;
-    const onPath = kind === "node" ? activePath.nodes.has(id) : activePath.edges.has(id);
-    return onPath ? 1 : 0.16;
-  }
-
-  function onSheetPointerDown(event: ReactPointerEvent<HTMLDivElement>) {
-    if (event.target !== event.currentTarget) return;
-    if (mode === "preview") {
-      setHover(null);
-      return;
-    }
-    if (tool === "add") {
-      const point = sheetPoint(event);
-      place(point.x, point.y);
-      return;
-    }
-    setSelection(null);
-    setConnectFrom(null);
-  }
-
-  function onNodePointerDown(event: ReactPointerEvent<HTMLDivElement>, node: MifaNode) {
+  function onNodePointerDown(event: ReactPointerEvent<HTMLDivElement>, node: SheetNode) {
     if (mode === "preview") return;
     event.stopPropagation();
-    if (tool === "connect") {
-      connect(node.id);
-      return;
-    }
-    if (tool === "add") {
-      setSelection({ kind: "node", id: node.id });
-      return;
-    }
+    setSelectedFlowId(node.flowIds[0] ?? null);
     const point = sheetPoint(event);
-    dragRef.current = {
-      id: node.id,
-      offsetX: point.x - node.x,
-      offsetY: point.y - node.y,
-      origin: doc,
-      moved: false,
-    };
-    setSelection({ kind: "node", id: node.id });
+    dragRef.current = { id: node.id, offsetX: point.x - node.x, offsetY: point.y - node.y, origin: doc, moved: false };
     event.currentTarget.setPointerCapture(event.pointerId);
   }
 
@@ -328,18 +163,12 @@ export function MifaDesigner() {
     const drag = dragRef.current;
     if (!drag) return;
     const point = sheetPoint(event);
-    const node = doc.nodes.find((item) => item.id === drag.id);
-    if (!node) return;
-    const x = clamp(snap(point.x - drag.offsetX), 0, SHEET.width - node.width);
-    const y = clamp(snap(point.y - drag.offsetY), 0, SHEET.height - node.height);
-    if (x === node.x && y === node.y) return;
+    const x = snap(point.x - drag.offsetX);
+    const y = snap(point.y - drag.offsetY);
     drag.moved = true;
     setHistory((current) => ({
       ...current,
-      present: {
-        ...current.present,
-        nodes: current.present.nodes.map((item) => (item.id === drag.id ? { ...item, x, y } : item)),
-      },
+      present: { ...current.present, positions: { ...current.present.positions, [drag.id]: { x, y } } },
     }));
   }
 
@@ -348,460 +177,342 @@ export function MifaDesigner() {
     dragRef.current = null;
     if (!drag?.moved) return;
     const origin = drag.origin;
-    setHistory((current) => ({
-      past: [...current.past, origin].slice(-50),
-      present: current.present,
-      future: [],
-    }));
+    setHistory((current) => ({ past: [...current.past, origin].slice(-50), present: current.present, future: [] }));
   }
 
-  function onResizePointerDown(event: ReactPointerEvent<HTMLDivElement>, node: MifaNode) {
-    if (mode !== "design" || tool !== "select") return;
-    event.stopPropagation();
-    resizeRef.current = { id: node.id, origin: doc, width: node.width, height: node.height, x: event.clientX, y: event.clientY };
-    event.currentTarget.setPointerCapture(event.pointerId);
+  function opacityFor(kind: "node" | "edge", id: string) {
+    if (!activePath) return 1;
+    const onPath = kind === "node" ? activePath.nodes.has(id) : activePath.edges.has(id);
+    return onPath ? 1 : 0.16;
   }
 
-  function onResizePointerMove(event: ReactPointerEvent<HTMLDivElement>) {
-    const resize = resizeRef.current;
-    if (!resize) return;
-    const width = clamp(snap(resize.width + event.clientX - resize.x), 72, 420);
-    const height = clamp(snap(resize.height + event.clientY - resize.y), 56, 280);
-    setHistory((current) => ({
-      ...current,
-      present: {
-        ...current.present,
-        nodes: current.present.nodes.map((node) => (node.id === resize.id ? { ...node, width, height } : node)),
-      },
-    }));
+  async function onImport(file: File) {
+    try {
+      replace(readWorkbook(await file.arrayBuffer()));
+      setNotice(`Imported ${file.name}`);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "Could not read that workbook.");
+    }
   }
 
-  function onResizePointerUp() {
-    const resize = resizeRef.current;
-    resizeRef.current = null;
-    if (!resize) return;
-    const origin = resize.origin;
-    setHistory((current) => {
-      const changed = current.present.nodes.some((node) => {
-        const before = origin.nodes.find((item) => item.id === node.id);
-        return before && (before.width !== node.width || before.height !== node.height);
-      });
-      if (!changed) return current;
-      return { past: [...current.past, origin].slice(-50), present: current.present, future: [] };
-    });
-  }
+  if (!ready) return <div className="h-full bg-[#f4f6f8]" />;
 
-  const hint =
-    mode === "preview"
-      ? "Hover a shape or a line. Everything off that path fades."
-      : tool === "add"
-        ? "Click the sheet to place a shape."
-        : tool === "connect"
-          ? connectFrom
-            ? "Click the shape this line goes to."
-            : "Click the shape the line starts from."
-          : "Drag a shape. Select one, then pick a symbol.";
-
-  if (!ready) return <div className="h-full bg-background" />;
+  const project = doc.project;
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
-      <header className="flex h-14 shrink-0 items-center gap-2 border-b border-border bg-card px-3">
-        <div className="w-48 shrink-0">
-          <p className="text-[11px] font-medium tracking-wide text-muted-foreground uppercase">MIFA</p>
+    <div className="flex h-full min-h-0 flex-col bg-[#f4f6f8]">
+      <header className="flex h-14 shrink-0 items-center gap-2 border-b border-[#d0d7de] bg-white px-3">
+        <div className="w-56 shrink-0">
+          <p className="text-[11px] font-medium tracking-wide text-[#5f6368] uppercase">MIFA</p>
           <Input
             aria-label="MIFA name"
-            value={doc.name}
-            onChange={(event) =>
-              setHistory((current) => ({ ...current, present: { ...current.present, name: event.target.value } }))
-            }
-            className="h-7 border-transparent bg-transparent px-0 text-sm font-medium shadow-none focus-visible:border-transparent focus-visible:ring-0"
+            value={project.name}
+            onChange={(event) => patchProject("name", event.target.value)}
+            className="h-7 border-transparent px-0 font-medium focus-visible:ring-0"
           />
         </div>
-        <div className="mx-1 h-6 w-px bg-border" />
-        <ToolButton active={tool === "select" && mode === "design"} label="Select" shortcut="V" disabled={mode === "preview"} onClick={() => setTool("select")}>
-          <MousePointer2 />
-        </ToolButton>
-        <ToolButton active={tool === "add" && mode === "design"} label="Add shape" shortcut="A" disabled={mode === "preview"} onClick={() => setTool("add")}>
-          <Square />
-        </ToolButton>
-        <ToolButton
-          active={tool === "connect" && mode === "design"}
-          label="Connect"
-          shortcut="C"
-          disabled={mode === "preview"}
-          onClick={() => {
-            setTool("connect");
-            setConnectFrom(null);
-          }}
-        >
-          <Spline />
-        </ToolButton>
-        <div className="mx-1 h-6 w-px bg-border" />
-        <Hint label="Undo" shortcut="⌘Z">
-          <Button variant="ghost" size="icon-sm" aria-label="Undo" disabled={!history.past.length} onClick={undo}>
-            <Undo2 />
-          </Button>
-        </Hint>
-        <Hint label="Redo" shortcut="⇧⌘Z">
-          <Button variant="ghost" size="icon-sm" aria-label="Redo" disabled={!history.future.length} onClick={redo}>
-            <Redo2 />
-          </Button>
-        </Hint>
-        <div className="ml-auto flex items-center gap-1 rounded-lg bg-muted p-0.5">
-          <button
-            type="button"
-            className={cn(
-              "h-7 rounded-md px-2.5 text-sm font-medium",
-              mode === "design" ? "bg-card text-foreground shadow-sm" : "text-muted-foreground",
-            )}
-            onClick={() => {
-              setMode("design");
-              setHover(null);
+        <Button variant="ghost" size="icon-sm" aria-label="Undo" title="Undo (⌘Z)" disabled={!history.past.length} onClick={undo}>
+          <Undo2 />
+        </Button>
+        <Button variant="ghost" size="icon-sm" aria-label="Redo" title="Redo (⇧⌘Z)" disabled={!history.future.length} onClick={redo}>
+          <Redo2 />
+        </Button>
+        <div className="ml-auto flex items-center gap-1">
+          <input
+            ref={fileRef}
+            type="file"
+            accept=".xlsx,.xls"
+            className="hidden"
+            onChange={(event) => {
+              const file = event.target.files?.[0];
+              event.target.value = "";
+              if (file) void onImport(file);
             }}
-          >
-            Design
-          </button>
-          <button
-            type="button"
-            className={cn(
-              "h-7 rounded-md px-2.5 text-sm font-medium",
-              mode === "preview" ? "bg-card text-foreground shadow-sm" : "text-muted-foreground",
-            )}
-            onClick={() => {
-              setMode("preview");
-              setTool("select");
-              setSelection(null);
-              setConnectFrom(null);
-            }}
-          >
-            Preview
-          </button>
+          />
+          <Button variant="outline" onClick={() => fileRef.current?.click()}>
+            Import Excel
+          </Button>
+          <Button variant="outline" onClick={() => downloadWorkbook(doc)}>
+            Export Excel
+          </Button>
+          <div className="ml-1 flex items-center gap-1 rounded-lg bg-[#e8eaed] p-0.5">
+            <button
+              type="button"
+              className={cn("h-7 rounded-md px-2.5 text-sm font-medium", mode === "design" ? "bg-white shadow-sm" : "text-[#5f6368]")}
+              onClick={() => {
+                setMode("design");
+                setHoverFlowIds(null);
+              }}
+            >
+              Design
+            </button>
+            <button
+              type="button"
+              className={cn("h-7 rounded-md px-2.5 text-sm font-medium", mode === "preview" ? "bg-white shadow-sm" : "text-[#5f6368]")}
+              onClick={() => setMode("preview")}
+            >
+              Preview
+            </button>
+          </div>
         </div>
       </header>
-      <div className="flex min-h-0 flex-1">
+
+      <div className="relative min-h-0 flex-1 overflow-auto p-6" onPointerDown={() => mode === "design" && setSelectedFlowId(null)}>
         <div
-          className="relative min-w-0 flex-1 overflow-auto bg-[#e6e9ed] p-8"
-          onPointerMove={(event) => {
-            if (connectFrom) setCursor(sheetPoint(event));
+          ref={sheetRef}
+          className="relative bg-white shadow-sm select-none"
+          style={{
+            width: sheet.width,
+            height: sheet.height,
+            backgroundImage: "radial-gradient(#d5dbe3 1px, transparent 1px)",
+            backgroundSize: "16px 16px",
           }}
         >
-          <div
-            ref={sheetRef}
-            data-sheet
-            className={cn(
-              "relative bg-white shadow-sm select-none",
-              mode === "design" && tool === "add" && "cursor-crosshair",
-              mode === "design" && tool === "connect" && "cursor-crosshair",
-            )}
-            style={{
-              width: SHEET.width,
-              height: SHEET.height,
-              backgroundImage: "radial-gradient(#d5dbe3 1px, transparent 1px)",
-              backgroundSize: "16px 16px",
-            }}
-            onPointerDown={onSheetPointerDown}
-          >
-            <svg className="absolute inset-0 h-full w-full" style={{ pointerEvents: "none" }}>
-              <defs>
-                {(["material", "information", "empty"] as const).map((kind) => (
-                  <marker key={kind} id={`arrow-${kind}`} markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
-                    <path d="M0,0 L8,4 L0,8 Z" fill={FLOW_STROKE[kind].stroke} />
-                  </marker>
-                ))}
-              </defs>
-              {doc.edges.map((edge) => {
-                const from = doc.nodes.find((node) => node.id === edge.from);
-                const to = doc.nodes.find((node) => node.id === edge.to);
-                if (!from || !to) return null;
-                const route = edgeRoute(from, to);
-                const style = FLOW_STROKE[edge.kind];
-                const selected = selection?.kind === "edge" && selection.id === edge.id;
-                return (
-                  <g
-                    key={edge.id}
-                    data-edge-id={edge.id}
-                    style={{ opacity: opacityFor("edge", edge.id), transition: "opacity 140ms ease", pointerEvents: "auto" }}
-                    onPointerEnter={() => {
-                      if (mode === "preview") setHover({ kind: "edge", id: edge.id });
-                    }}
-                    onPointerLeave={() => {
-                      if (mode === "preview") setHover((current) => (current?.id === edge.id ? null : current));
-                    }}
-                    onPointerDown={(event) => {
-                      if (mode === "preview") return;
-                      event.stopPropagation();
-                      setSelection({ kind: "edge", id: edge.id });
-                      setConnectFrom(null);
-                    }}
-                  >
-                    <path d={route.path} fill="none" stroke="transparent" strokeWidth={16} style={{ pointerEvents: "stroke" }} />
-                    <path
-                      d={route.path}
-                      fill="none"
-                      stroke={selected ? "#1b4f9c" : style.stroke}
-                      strokeWidth={selected ? 2.25 : 1.6}
-                      strokeDasharray={style.dash}
-                      markerEnd={`url(#arrow-${edge.kind})`}
-                    />
-                  </g>
-                );
-              })}
-              {connectFrom && cursor ? (
-                <line
-                  x1={centerOf(doc.nodes.find((node) => node.id === connectFrom)).x}
-                  y1={centerOf(doc.nodes.find((node) => node.id === connectFrom)).y}
-                  x2={cursor.x}
-                  y2={cursor.y}
-                  stroke="#1b4f9c"
-                  strokeDasharray="4 3"
-                />
-              ) : null}
-            </svg>
-            {doc.nodes.map((node) => (
-              <div
-                key={node.id}
-                role="button"
-                tabIndex={0}
-                aria-label={node.label}
-                data-node-id={node.id}
-                className={cn("absolute", mode === "design" && tool === "select" && "cursor-grab active:cursor-grabbing")}
-                style={{
-                  left: node.x,
-                  top: node.y,
-                  width: node.width,
-                  height: node.height,
-                  opacity: opacityFor("node", node.id),
-                  transition: "opacity 140ms ease",
-                }}
-                onPointerDown={(event) => onNodePointerDown(event, node)}
-                onPointerMove={onNodePointerMove}
-                onPointerUp={onNodePointerUp}
-                onPointerEnter={() => {
-                  if (mode === "preview") setHover({ kind: "node", id: node.id });
-                }}
-                onPointerLeave={() => {
-                  if (mode === "preview") setHover((current) => (current?.id === node.id ? null : current));
-                }}
-              >
-                <SymbolShape
-                  symbol={node.symbol}
-                  width={node.width}
-                  height={node.height}
-                  label={node.label}
-                  selected={selection?.kind === "node" && selection.id === node.id}
-                  armed={connectFrom === node.id}
-                />
-                {mode === "design" && tool === "select" && selection?.kind === "node" && selection.id === node.id ? (
-                  <div
-                    className="absolute -right-1 -bottom-1 size-2.5 cursor-nwse-resize rounded-sm border border-[#1b4f9c] bg-white"
-                    onPointerDown={(event) => onResizePointerDown(event, node)}
-                    onPointerMove={onResizePointerMove}
-                    onPointerUp={onResizePointerUp}
+          <TitleBlock project={project} />
+          <svg className="absolute inset-0 h-full w-full" style={{ pointerEvents: "none" }}>
+            <defs>
+              {(["material", "information", "empty"] as const).map((kind) => (
+                <marker key={kind} id={`arrow-${kind}`} markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+                  <path d="M0,0 L8,4 L0,8 Z" fill={FLOW_STROKE[kind].stroke} />
+                </marker>
+              ))}
+            </defs>
+            {sheet.edges.map((edge) => {
+              const from = sheet.nodes.find((node) => node.id === edge.from);
+              const to = sheet.nodes.find((node) => node.id === edge.to);
+              if (!from || !to) return null;
+              const route = edgeRoute(from, to);
+              const style = FLOW_STROKE[edge.kind];
+              return (
+                <g
+                  key={edge.id}
+                  style={{ opacity: opacityFor("edge", edge.id), transition: "opacity 140ms ease", pointerEvents: "auto" }}
+                  onPointerEnter={() => mode === "preview" && setHoverFlowIds(edge.flowIds)}
+                  onPointerLeave={() => mode === "preview" && setHoverFlowIds(null)}
+                >
+                  <path d={route.path} fill="none" stroke="transparent" strokeWidth={16} style={{ pointerEvents: "stroke" }} />
+                  <path
+                    d={route.path}
+                    fill="none"
+                    stroke={style.stroke}
+                    strokeWidth={1.7}
+                    strokeDasharray={style.dash}
+                    markerEnd={`url(#arrow-${edge.kind})`}
                   />
-                ) : null}
-              </div>
-            ))}
-            <svg className="pointer-events-none absolute inset-0 z-10 h-full w-full">
-              {doc.edges.map((edge) => {
-                if (!edge.label) return null;
-                const from = doc.nodes.find((node) => node.id === edge.from);
-                const to = doc.nodes.find((node) => node.id === edge.to);
-                if (!from || !to) return null;
-                const route = edgeRoute(from, to);
-                const textWidth = Math.max(28, edge.label.length * 6.4 + 12);
-                return (
-                  <g
-                    key={edge.id}
-                    transform={`translate(${route.label.x} ${route.label.y})`}
-                    style={{ opacity: opacityFor("edge", edge.id), transition: "opacity 140ms ease" }}
-                  >
-                    <rect x={-textWidth / 2} y={-10} width={textWidth} height={18} rx={3} fill="#fff" stroke="#d0d7de" />
-                    <text y={3} textAnchor="middle" fill="#202124" fontSize={11} fontFamily="inherit">
-                      {edge.label}
-                    </text>
-                  </g>
-                );
-              })}
-            </svg>
-            {doc.nodes.length === 0 ? (
-              <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
-                <p className="text-sm text-muted-foreground">Add a shape, then click the sheet.</p>
-              </div>
-            ) : null}
+                </g>
+              );
+            })}
+          </svg>
+          {sheet.nodes.map((node) => (
+            <div
+              key={node.id}
+              role="button"
+              tabIndex={0}
+              aria-label={node.label}
+              className={cn("absolute", mode === "design" && "cursor-grab active:cursor-grabbing")}
+              style={{
+                left: node.x,
+                top: node.y,
+                width: node.width,
+                height: node.height,
+                opacity: opacityFor("node", node.id),
+                transition: "opacity 140ms ease",
+              }}
+              onPointerDown={(event) => onNodePointerDown(event, node)}
+              onPointerMove={onNodePointerMove}
+              onPointerUp={onNodePointerUp}
+              onPointerEnter={() => mode === "preview" && setHoverFlowIds(node.flowIds)}
+              onPointerLeave={() => mode === "preview" && setHoverFlowIds(null)}
+            >
+              <SymbolShape
+                symbol={node.symbol}
+                width={node.width}
+                height={node.height}
+                label={node.label}
+                selected={Boolean(selectedFlowId && node.flowIds.includes(selectedFlowId) && mode === "design")}
+              />
+            </div>
+          ))}
+          <svg className="pointer-events-none absolute inset-0 z-10 h-full w-full">
+            {sheet.edges.map((edge) => {
+              if (!edge.label) return null;
+              const from = sheet.nodes.find((node) => node.id === edge.from);
+              const to = sheet.nodes.find((node) => node.id === edge.to);
+              if (!from || !to) return null;
+              const route = edgeRoute(from, to);
+              const textWidth = Math.max(28, edge.label.length * 6.4 + 12);
+              return (
+                <g key={edge.id} transform={`translate(${route.label.x} ${route.label.y})`} style={{ opacity: opacityFor("edge", edge.id) }}>
+                  <rect x={-textWidth / 2} y={-10} width={textWidth} height={18} rx={3} fill="#fff" stroke="#d0d7de" />
+                  <text y={3} textAnchor="middle" fill="#202124" fontSize={11} fontFamily="inherit">
+                    {edge.label}
+                  </text>
+                </g>
+              );
+            })}
+          </svg>
+          {doc.flows.length === 0 ? (
+            <div className="pointer-events-none absolute inset-0 flex items-center justify-center px-8 text-center">
+              <p className="max-w-md text-sm text-[#5f6368]">Add a flow in the register, or import an Excel file. The sheet draws the MIFA from those rows.</p>
+            </div>
+          ) : null}
+          <div className="absolute bottom-4 left-4 flex items-center gap-3 rounded-md border border-[#d0d7de] bg-white/95 px-2 py-1 text-[11px] text-[#202124]">
+            <Legend swatch="#202124" label="Material" />
+            <Legend swatch="#1b4f9c" label="Information" dashed />
+            <Legend swatch="#5f6368" label="Empty return" dashed />
           </div>
         </div>
-        <aside className="flex w-[280px] shrink-0 flex-col border-l border-border bg-card">
-          <div className="border-b border-border px-4 py-3">
-            <p className="text-sm font-medium">Sheet</p>
-            <p className="mt-1 text-[12px] leading-relaxed text-muted-foreground">{hint}</p>
-          </div>
-          <div className="flex-1 overflow-auto px-4 py-3">
-            <p className="text-[11px] font-medium tracking-wide text-muted-foreground uppercase">Line</p>
-            <div className="mt-2 grid grid-cols-1 gap-1">
-              {FLOW_KINDS.map((kind) => (
-                <button
-                  key={kind.id}
-                  type="button"
-                  aria-pressed={flowKind === kind.id || selectedEdge?.kind === kind.id}
-                  className={cn(
-                    "flex items-center gap-2 rounded-lg border px-2 py-1.5 text-left text-sm",
-                    (selectedEdge ? selectedEdge.kind === kind.id : flowKind === kind.id)
-                      ? "border-[#1b4f9c] bg-[#e8f0fe]"
-                      : "border-border hover:bg-muted",
-                  )}
-                  onClick={() => {
-                    setFlowKind(kind.id);
-                    if (selectedEdge) {
-                      const id = selectedEdge.id;
-                      commit((current) => ({
-                        ...current,
-                        edges: current.edges.map((edge) => (edge.id === id ? { ...edge, kind: kind.id } : edge)),
-                      }));
-                    } else if (mode === "design") {
-                      setTool("connect");
-                    }
-                  }}
-                >
-                  <span
-                    className="h-0.5 w-6"
-                    style={{
-                      background: FLOW_STROKE[kind.id].dash ? "transparent" : FLOW_STROKE[kind.id].stroke,
-                      borderTop: FLOW_STROKE[kind.id].dash ? `2px ${kind.id === "information" ? "dotted" : "dashed"} ${FLOW_STROKE[kind.id].stroke}` : undefined,
-                    }}
-                  />
-                  <span>{kind.label}</span>
-                </button>
-              ))}
-            </div>
-            {selectedEdge ? (
-              <label className="mt-3 block text-[11px] font-medium text-muted-foreground">
-                Line label
-                <Input
-                  aria-label="Line label"
-                  value={selectedEdge.label}
-                  placeholder="Truck, Kanban…"
-                  className="mt-1"
-                  onChange={(event) => {
-                    const id = selectedEdge.id;
-                    const label = event.target.value;
-                    setHistory((current) => ({
-                      ...current,
-                      present: {
-                        ...current.present,
-                        edges: current.present.edges.map((edge) => (edge.id === id ? { ...edge, label } : edge)),
-                      },
-                    }));
-                  }}
-                />
-              </label>
-            ) : null}
+      </div>
 
-            <p className="mt-5 text-[11px] font-medium tracking-wide text-muted-foreground uppercase">Symbol</p>
-            <div className="mt-2 grid grid-cols-2 gap-1.5">
-              {SYMBOLS.map((symbol) => {
-                const active = selectedNode
-                  ? selectedNode.symbol === symbol.id
-                  : mode === "design" && stamp === symbol.id && !selectedEdge;
-                const size = SYMBOL_SIZE[symbol.id];
-                const previewWidth = 72;
-                const previewHeight = Math.round((size.height / size.width) * previewWidth);
+      <section className="flex h-[320px] shrink-0 flex-col border-t border-[#d0d7de] bg-white">
+        <div className="flex flex-wrap items-end gap-2 border-b border-[#d0d7de] px-3 py-2">
+          <Field label="Plant" value={project.plant} onChange={(value) => patchProject("plant", value)} />
+          <Field label="Shop" value={project.shop} onChange={(value) => patchProject("shop", value)} />
+          <label className="grid gap-0.5 text-[10px] font-medium tracking-wide text-[#5f6368] uppercase">
+            Scenario
+            <select
+              aria-label="Scenario"
+              value={project.scenario}
+              onChange={(event) => patchProject("scenario", event.target.value)}
+              className="h-7 rounded-md border border-[#d0d7de] bg-white px-1.5 text-sm text-[#202124]"
+            >
+              {["Current", "Future", "Ideal"].map((item) => (
+                <option key={item}>{item}</option>
+              ))}
+            </select>
+          </label>
+          <Field label="veh/h" value={project.rate} onChange={(value) => patchProject("rate", value)} width="w-16" />
+          <Field label="Shifts" value={project.shifts} onChange={(value) => patchProject("shifts", value)} width="w-16" />
+          <Field label="veh/day" value={project.perDay} onChange={(value) => patchProject("perDay", value)} width="w-20" />
+          <Field label="Diversity" value={project.diversity} onChange={(value) => patchProject("diversity", value)} width="w-36" />
+          <Field label="Updated" value={project.updated} onChange={(value) => patchProject("updated", value)} width="w-28" />
+          <div className="ml-auto flex items-center gap-1">
+            <p className="mr-2 text-[12px] text-[#5f6368]">{notice || (mode === "preview" ? "Hover a step to isolate its flows." : "Each row is one flow. The sheet shares docks, lines and systems.")}</p>
+            <Button variant="outline" onClick={addFlow}>
+              Add flow
+            </Button>
+            <Button variant="outline" onClick={() => replace(emptyDocument())}>
+              New
+            </Button>
+            <Button variant="outline" onClick={() => replace(exampleDocument())}>
+              Example
+            </Button>
+          </div>
+        </div>
+        <div className="min-h-0 flex-1 overflow-auto">
+          <table className="border-collapse text-left text-[12px]">
+            <thead className="sticky top-0 z-10 bg-[#f4f6f8]">
+              <tr>
+                {FLOW_GROUPS.map((group) => (
+                  <th key={group.name} colSpan={group.count} className="border-r border-b border-[#d0d7de] px-2 py-1 text-[10px] font-semibold tracking-wide text-[#5f6368] uppercase">
+                    {group.name}
+                  </th>
+                ))}
+                <th className="border-b border-[#d0d7de]" />
+              </tr>
+              <tr>
+                {FLOW_COLUMNS.map((column) => (
+                  <th key={column.key} title={column.header} className="border-r border-b border-[#d0d7de] px-2 py-1 font-medium whitespace-nowrap text-[#202124]">
+                    {column.short}
+                  </th>
+                ))}
+                <th className="border-b border-[#d0d7de] px-2 py-1" />
+              </tr>
+            </thead>
+            <tbody>
+              {doc.flows.map((flow) => {
+                const selected = flow.id === selectedFlowId;
                 return (
-                  <button
-                    key={symbol.id}
-                    type="button"
-                    aria-pressed={active}
-                    className={cn(
-                      "flex flex-col items-center rounded-lg border px-1.5 py-1.5",
-                      active ? "border-[#1b4f9c] bg-[#e8f0fe]" : "border-border hover:bg-muted",
-                    )}
-                    onClick={() => chooseSymbol(symbol.id)}
-                  >
-                    <SymbolShape symbol={symbol.id} width={previewWidth} height={Math.max(36, previewHeight)} />
-                    <span className="mt-0.5 text-[11px] text-foreground">{symbol.label}</span>
-                  </button>
+                  <tr key={flow.id} className={cn(selected && "bg-[#e8f0fe]")} onClick={() => setSelectedFlowId(flow.id)}>
+                    {FLOW_COLUMNS.map((column) => (
+                      <td key={column.key} className="border-r border-b border-[#e6e9ed] px-1 py-0.5 align-middle">
+                        <FlowCell flow={flow} column={column.key} onChange={(value) => patchFlow(flow.id, column.key, value)} />
+                      </td>
+                    ))}
+                    <td className="border-b border-[#e6e9ed] px-1">
+                      <button type="button" className="px-1 text-[11px] text-[#c5221f]" onClick={() => deleteFlow(flow.id)}>
+                        Delete
+                      </button>
+                    </td>
+                  </tr>
                 );
               })}
-            </div>
-            {selectedNode ? (
-              <label className="mt-3 block text-[11px] font-medium text-muted-foreground">
-                Name
-                <Input
-                  aria-label="Shape name"
-                  value={selectedNode.label}
-                  className="mt-1"
-                  onChange={(event) => {
-                    const id = selectedNode.id;
-                    const label = event.target.value;
-                    setHistory((current) => ({
-                      ...current,
-                      present: {
-                        ...current.present,
-                        nodes: current.present.nodes.map((node) => (node.id === id ? { ...node, label } : node)),
-                      },
-                    }));
-                  }}
-                />
-              </label>
-            ) : null}
-          </div>
-          <div className="flex flex-col gap-1 border-t border-border p-3">
-            {selection ? (
-              <Button variant="destructive" onClick={removeSelection}>
-                Delete
-              </Button>
-            ) : null}
-            <div className="flex gap-1">
-              <Button variant="outline" className="flex-1" onClick={() => replace(emptyDocument())}>
-                New
-              </Button>
-              <Button variant="outline" className="flex-1" onClick={() => replace(exampleDocument())}>
-                Example
-              </Button>
-            </div>
-          </div>
-        </aside>
-      </div>
+            </tbody>
+          </table>
+        </div>
+      </section>
     </div>
   );
 }
 
-function ToolButton({
-  active,
-  label,
-  shortcut,
-  disabled,
-  onClick,
-  children,
-}: {
-  active: boolean;
-  label: string;
-  shortcut: string;
-  disabled?: boolean;
-  onClick: () => void;
-  children: ReactNode;
-}) {
+function TitleBlock({ project }: { project: ProjectInfo }) {
+  const line = [
+    project.rate && `${project.rate} veh/h`,
+    project.shifts && `${project.shifts} shifts`,
+    project.perDay && `${project.perDay} veh/day`,
+  ]
+    .filter(Boolean)
+    .join(" · ");
   return (
-    <Hint label={label} shortcut={shortcut}>
-      <Button
-        variant={active ? "secondary" : "ghost"}
-        size="icon-sm"
-        aria-label={label}
-        aria-pressed={active}
-        disabled={disabled}
-        onClick={onClick}
-      >
-        {children}
-      </Button>
-    </Hint>
+    <div className="pointer-events-none absolute top-4 left-4 max-w-md text-[#202124]">
+      <p className="text-[11px] tracking-wide text-[#5f6368] uppercase">{[project.plant, project.shop].filter(Boolean).join(" · ") || "MIFA"}</p>
+      <p className="text-sm font-semibold">{project.name}</p>
+      <p className="text-[12px] text-[#5f6368]">
+        {[project.scenario, line, project.diversity].filter(Boolean).join(" · ")}
+        {project.updated ? ` · ${project.updated}` : ""}
+      </p>
+    </div>
   );
 }
 
-function centerOf(node: MifaNode | undefined) {
-  if (!node) return { x: 0, y: 0 };
-  return { x: node.x + node.width / 2, y: node.y + node.height / 2 };
+function Field({ label, value, onChange, width = "w-28" }: { label: string; value: string; onChange: (value: string) => void; width?: string }) {
+  return (
+    <label className={cn("grid gap-0.5 text-[10px] font-medium tracking-wide text-[#5f6368] uppercase", width)}>
+      {label}
+      <input
+        aria-label={label}
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        className="h-7 w-full rounded-md border border-[#d0d7de] bg-white px-1.5 text-sm font-normal tracking-normal text-[#202124] normal-case"
+      />
+    </label>
+  );
 }
 
-function clamp(value: number, min: number, max: number) {
-  return Math.min(max, Math.max(min, value));
+function FlowCell({ flow, column, onChange }: { flow: Flow; column: keyof Flow; onChange: (value: string | boolean) => void }) {
+  if (BOOL_KEYS.has(column)) {
+    const checked = Boolean(flow[column]);
+    return <input aria-label={column} type="checkbox" checked={checked} onChange={(event) => onChange(event.target.checked)} />;
+  }
+  if (column === "packaging") {
+    return (
+      <select
+        aria-label="Packaging type"
+        value={flow.packaging}
+        onChange={(event) => onChange(event.target.value)}
+        className="h-7 w-16 bg-transparent text-[12px]"
+      >
+        <option value="">—</option>
+        <option value="SB">SB</option>
+        <option value="LV">LV</option>
+      </select>
+    );
+  }
+  return (
+    <input
+      aria-label={column}
+      value={String(flow[column] ?? "")}
+      onChange={(event) => onChange(event.target.value)}
+      className="h-7 w-28 bg-transparent px-1 text-[12px] outline-none"
+    />
+  );
+}
+
+function Legend({ swatch, label, dashed = false }: { swatch: string; label: string; dashed?: boolean }) {
+  return (
+    <span className="inline-flex items-center gap-1">
+      <span className="inline-block w-5 border-t-2" style={{ borderColor: swatch, borderStyle: dashed ? "dashed" : "solid" }} />
+      {label}
+    </span>
+  );
 }
