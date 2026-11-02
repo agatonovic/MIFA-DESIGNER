@@ -1,4 +1,6 @@
 export { MifaDesigner } from "./mifa-designer";
+export { STAMPS, linkNodes, placeSymbol, retargetNode } from "./canvas";
+export type { StampId } from "./canvas";
 export { SymbolShape } from "./symbol-shape";
 export {
   FLOW_KINDS,

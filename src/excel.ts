@@ -1,5 +1,5 @@
 import * as XLSX from "xlsx";
-import { blankFlow, emptyProject, type Flow, type MifaDocument, type ProjectInfo } from "./document";
+import { SYMBOLS, blankFlow, emptyProject, type Flow, type MifaDocument, type ProjectInfo, type SymbolId } from "./document";
 
 export const FLOW_COLUMNS: { key: keyof Flow; header: string; short: string }[] = [
   { key: "flowNumber", header: "Flow number", short: "#" },
@@ -165,16 +165,20 @@ export function workbookToDocument(book: XLSX.WorkBook): MifaDocument {
   if (!project.name) project.name = "Imported MIFA";
 
   const positions: MifaDocument["positions"] = {};
+  const glyphs: Record<string, SymbolId> = {};
+  const symbolIds = new Set<string>(SYMBOLS.map((item) => item.id));
   const layoutSheet = book.Sheets.Layout ?? book.Sheets.layout;
   if (layoutSheet) {
     for (const row of sheetRows(layoutSheet).slice(1)) {
       const id = asText(row[0]);
       const x = Number(row[1]);
       const y = Number(row[2]);
+      const symbol = asText(row[3]);
       if (id && Number.isFinite(x) && Number.isFinite(y)) positions[id] = { x, y };
+      if (id && symbolIds.has(symbol)) glyphs[id] = symbol as SymbolId;
     }
   }
-  return { project, flows, positions };
+  return { project, flows, positions, glyphs };
 }
 
 export function documentToWorkbook(doc: MifaDocument) {
@@ -189,7 +193,10 @@ export function documentToWorkbook(doc: MifaDocument) {
       }),
     ),
   ];
-  const layoutRows = [["Node", "X", "Y"], ...Object.entries(doc.positions).map(([id, point]) => [id, point.x, point.y])];
+  const layoutRows = [
+    ["Node", "X", "Y", "Symbol"],
+    ...Object.entries(doc.positions).map(([id, point]) => [id, point.x, point.y, doc.glyphs?.[id] ?? ""]),
+  ];
   const book = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(book, XLSX.utils.aoa_to_sheet(projectRows), "Project");
   XLSX.utils.book_append_sheet(book, XLSX.utils.aoa_to_sheet(flowRows), "Flows");

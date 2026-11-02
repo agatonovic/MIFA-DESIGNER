@@ -81,6 +81,7 @@ export type MifaDocument = {
   project: ProjectInfo;
   flows: Flow[];
   positions: Record<string, { x: number; y: number }>;
+  glyphs?: Record<string, SymbolId>;
 };
 
 export type SheetNode = {
@@ -468,7 +469,7 @@ export function buildSheet(doc: MifaDocument): Sheet {
     return {
       id: node.id,
       kind: node.kind,
-      symbol: KIND_SYMBOL[node.kind],
+      symbol: doc.glyphs?.[node.id] ?? KIND_SYMBOL[node.kind],
       label: node.label,
       ...box,
       flowIds: [...node.flowIds],
@@ -543,5 +544,16 @@ export function parseMifaDocument(value: unknown): MifaDocument | null {
     project: { ...emptyProject(), ...project } as ProjectInfo,
     flows: doc.flows.map((flow) => ({ ...flow })),
     positions,
+    glyphs: readGlyphs(doc.glyphs),
   };
+}
+
+function readGlyphs(value: unknown): Record<string, SymbolId> {
+  const glyphs: Record<string, SymbolId> = {};
+  if (!value || typeof value !== "object") return glyphs;
+  const ids = new Set<string>(SYMBOLS.map((item) => item.id));
+  for (const [id, symbol] of Object.entries(value)) {
+    if (typeof symbol === "string" && ids.has(symbol)) glyphs[id] = symbol as SymbolId;
+  }
+  return glyphs;
 }

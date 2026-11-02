@@ -1,14 +1,14 @@
 # MIFA Designer
 
-A sheet for drawing Stellantis internal-logistics MIFAs from a flow register.
+A standalone sheet for drawing Stellantis internal-logistics MIFAs.
 
-Each row is one flow: supplier, dock, warehouse, then kitting and sequencing side by side, then the line, with empty-packaging returns and the information trigger. The drawing shares a dock, a line, or a system that several rows use. Hover a step in Preview and the other flows fade.
+The canvas and the data table are the same document. Add a supplier, dock, warehouse, kit, or line on the sheet and that step is written into the selected flow. Change a cell and the sheet updates. Select a symbol and pick another to turn it into that symbol. Connect two symbols and the line is stored on the flow: material, information, or an empty return.
 
-The register is the same table you can open in Excel. Import and Export read and write three sheets: Project, Flows, and Layout.
+Pinch on a trackpad zooms the sheet. Two-finger scroll pans it. Hold Space and drag to pan with a mouse. Hide data when you want the sheet alone, and show it again when you want the register.
 
-This folder is the whole product. It does not depend on Labelator. Copy it into its own repository when MIFA Designer should be shared on its own.
+Import and Export use three Excel sheets: Project, Flows, and Layout.
 
-## Run it alone
+## Run it
 
 ```bash
 npm install
@@ -17,8 +17,6 @@ npm run dev
 
 The app opens at http://localhost:3001.
 
-`npm run build` writes a static site to `dist/`.
+`npm test` checks the sheet. `npm run build` writes a static site to `dist/`.
 
-## Use it inside Labelator
-
-Labelator imports `MifaDesigner` from this package and shows it at `/mifa`.
+The public site is https://agatonovic.github.io/MIFA-DESIGNER/. A push to `main` builds that site and publishes it.
