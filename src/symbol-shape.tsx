@@ -1,6 +1,9 @@
 import type { SymbolId } from "./document";
+import { LINE_CAR } from "./line-car";
 
 const ink = "#202124";
+const BODY_COLORS = ["#d80000", "#d80000", "#d80000", "#3ff200", "#3ff200", "#3ff200", "#009999", "#009999", "#009999", "#969696", "#969696", "#969696"];
+const PART_FILL = { outline: "#000000", lamp: "#ffe500", wheel: "#000000", hub: "#7f99b2", window: "#ffffff" };
 
 export function SymbolShape({
   symbol,
@@ -83,18 +86,7 @@ function Glyph({ symbol, width, bottom }: { symbol: SymbolId; width: number; bot
       </g>
     );
   }
-  if (symbol === "production") {
-    const y = h * 0.1;
-    const bh = h * 0.78;
-    return (
-      <path
-        d={`M ${w * 0.04} ${y} H ${w * 0.78} L ${w * 0.96} ${y + bh / 2} L ${w * 0.78} ${y + bh} H ${w * 0.04} Z`}
-        fill="#fff"
-        stroke={ink}
-        strokeWidth={stroke}
-      />
-    );
-  }
+  if (symbol === "production") return <ProductionLine width={w} height={h} stroke={stroke} />;
   if (symbol === "it") {
     return (
       <g>
@@ -126,6 +118,34 @@ function Glyph({ symbol, width, bottom }: { symbol: SymbolId; width: number; bot
       {symbol === "kitting" ? <KitMarks width={w} height={h} stroke={stroke} /> : null}
       {symbol === "sequencing" ? <SequenceMarks width={w} height={h} stroke={stroke} /> : null}
       {symbol === "empty" ? <EmptyMark width={w} height={h} stroke={stroke} /> : null}
+    </g>
+  );
+}
+
+function ProductionLine({ width, height }: { width: number; height: number; stroke: number }) {
+  const rail = Math.max(2, width * 0.15);
+  const gap = width - rail * 2;
+  const carW = gap * 0.72;
+  const carH = carW * (LINE_CAR.height / LINE_CAR.width);
+  const count = Math.max(1, Math.floor((height - 2) / (carH * 0.92)));
+  const pitch = height / count;
+  return (
+    <g>
+      <rect x={0} y={0} width={rail} height={height} fill="#000" />
+      <rect x={width - rail} y={0} width={rail} height={height} fill="#000" />
+      {Array.from({ length: count }, (_, index) => {
+        const slotH = Math.min(carH, pitch - 1);
+        const slotW = slotH * (LINE_CAR.width / LINE_CAR.height);
+        const sx = slotW / LINE_CAR.width;
+        const sy = slotH / LINE_CAR.height;
+        return (
+          <g key={index} transform={`translate(${rail + (gap - slotW) / 2} ${pitch * index + (pitch - slotH) / 2}) scale(${sx} ${sy})`}>
+            {LINE_CAR.parts.map((part, partIndex) => (
+              <path key={partIndex} d={part.d} fill={part.role === "body" ? BODY_COLORS[index % BODY_COLORS.length] : PART_FILL[part.role]} />
+            ))}
+          </g>
+        );
+      })}
     </g>
   );
 }

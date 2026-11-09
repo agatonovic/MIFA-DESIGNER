@@ -1,5 +1,5 @@
 import * as XLSX from "xlsx";
-import { SYMBOLS, blankFlow, emptyProject, type Flow, type MifaDocument, type ProjectInfo, type SymbolId } from "./document";
+import { FLOW_KINDS, SYMBOLS, blankFlow, emptyProject, type DrawnLink, type Flow, type FlowKind, type LineBend, type MifaDocument, type ProjectInfo, type Side, type SymbolId } from "./document";
 
 export const FLOW_COLUMNS: { key: keyof Flow; header: string; short: string }[] = [
   { key: "flowNumber", header: "Flow number", short: "#" },
@@ -166,6 +166,7 @@ export function workbookToDocument(book: XLSX.WorkBook): MifaDocument {
 
   const positions: MifaDocument["positions"] = {};
   const glyphs: Record<string, SymbolId> = {};
+  const sizes: NonNullable<MifaDocument["sizes"]> = {};
   const symbolIds = new Set<string>(SYMBOLS.map((item) => item.id));
   const layoutSheet = book.Sheets.Layout ?? book.Sheets.layout;
   if (layoutSheet) {
@@ -176,9 +177,92 @@ export function workbookToDocument(book: XLSX.WorkBook): MifaDocument {
       const symbol = asText(row[3]);
       if (id && Number.isFinite(x) && Number.isFinite(y)) positions[id] = { x, y };
       if (id && symbolIds.has(symbol)) glyphs[id] = symbol as SymbolId;
+      const width = Number(row[4]);
+      const height = Number(row[5]);
+      if (id && Number.isFinite(width) && Number.isFinite(height) && width > 0 && height > 0) sizes[id] = { width, height };
     }
   }
-  return { project, flows, positions, glyphs };
+  const marks: MifaDocument["marks"] = [];
+  const symbolSheet = book.Sheets.Symbols ?? book.Sheets.symbols;
+  if (symbolSheet) {
+    for (const row of sheetRows(symbolSheet).slice(1)) {
+      const id = asText(row[0]);
+      const name = asText(row[1]);
+      const symbol = asText(row[2]);
+      const x = Number(row[3]);
+      const y = Number(row[4]);
+      const width = Number(row[5]);
+      const height = Number(row[6]);
+      const shape = asText(row[7]);
+      if (id && name && symbolIds.has(symbol) && Number.isFinite(x) && Number.isFinite(y)) {
+        marks.push({
+          id,
+          name,
+          symbol: symbol as SymbolId,
+          x,
+          y,
+          width: Number.isFinite(width) && width > 0 ? width : undefined,
+          height: Number.isFinite(height) && height > 0 ? height : undefined,
+          shape: shape === "text" || shape === "rectangle" || shape === "ellipse" ? shape : undefined,
+        });
+      }
+    }
+  }
+  const bends: NonNullable<MifaDocument["bends"]> = {};
+  const routeSheet = book.Sheets.Routes ?? book.Sheets.routes;
+  if (routeSheet) {
+    for (const row of sheetRows(routeSheet).slice(1)) {
+      const id = asText(row[0]);
+      const x = Number(row[1]);
+      const y = Number(row[2]);
+      const part = asText(row[3]);
+      const side = asText(row[4]);
+      if (!id || !Number.isFinite(x) || !Number.isFinite(y)) continue;
+      const bend: LineBend = bends[id] ?? { x: 0, y: 0 };
+      if (part === "corner") bend.corners = [...(bend.corners ?? []), { x, y }];
+      else if ((part === "from" || part === "to") && (side === "n" || side === "e" || side === "s" || side === "w")) bend[part] = { side: side as Side, at: x };
+      else {
+        bend.x = x;
+        bend.y = y;
+      }
+      bends[id] = bend;
+    }
+  }
+  const strokes: NonNullable<MifaDocument["strokes"]> = {};
+  const strokeSheet = book.Sheets.Strokes ?? book.Sheets.strokes;
+  if (strokeSheet) {
+    for (const row of sheetRows(strokeSheet).slice(1)) {
+      const id = asText(row[0]);
+      const color = asText(row[1]);
+      const dash = asText(row[2]);
+      const arrow = asText(row[3]);
+      if (id && color) strokes[id] = { color, dash, ...(arrow === "end" || arrow === "start" || arrow === "both" || arrow === "none" ? { arrow } : {}) };
+    }
+  }
+  const kinds = new Set<string>(FLOW_KINDS.map((item) => item.id));
+  const links: DrawnLink[] = [];
+  const linkSheet = book.Sheets.Links ?? book.Sheets.links;
+  if (linkSheet) {
+    for (const row of sheetRows(linkSheet).slice(1)) {
+      const id = asText(row[0]);
+      const from = asText(row[1]);
+      const to = asText(row[2]);
+      const kind = asText(row[3]);
+      if (id && from && to && kinds.has(kind)) links.push({ id, from, to, kind: kind as FlowKind, label: asText(row[4]) });
+    }
+  }
+  const stack = { back: [] as string[], front: [] as string[] };
+  const stackSheet = book.Sheets.Stack ?? book.Sheets.stack;
+  if (stackSheet) {
+    for (const row of sheetRows(stackSheet).slice(1)) {
+      const layer = asText(row[0]);
+      const id = asText(row[1]);
+      if (!id) continue;
+      if (layer === "back") stack.back.push(id);
+      if (layer === "front") stack.front.push(id);
+    }
+  }
+  return { project, flows, positions, glyphs, marks, sizes, bends, strokes, links, stack };
 }
 
 export function documentToWorkbook(doc: MifaDocument) {
@@ -194,13 +278,42 @@ export function documentToWorkbook(doc: MifaDocument) {
     ),
   ];
   const layoutRows = [
-    ["Node", "X", "Y", "Symbol"],
-    ...Object.entries(doc.positions).map(([id, point]) => [id, point.x, point.y, doc.glyphs?.[id] ?? ""]),
+    ["Node", "X", "Y", "Symbol", "W", "H"],
+    ...[...new Set([...Object.keys(doc.positions), ...Object.keys(doc.sizes ?? {})])].map((id) => {
+      const point = doc.positions[id];
+      const size = doc.sizes?.[id];
+      return [id, point?.x ?? "", point?.y ?? "", doc.glyphs?.[id] ?? "", size?.width ?? "", size?.height ?? ""];
+    }),
   ];
   const book = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(book, XLSX.utils.aoa_to_sheet(projectRows), "Project");
   XLSX.utils.book_append_sheet(book, XLSX.utils.aoa_to_sheet(flowRows), "Flows");
+  const symbolRows = [
+    ["Id", "Name", "Symbol", "X", "Y", "W", "H", "Shape"],
+    ...(doc.marks ?? []).map((mark) => [mark.id, mark.name, mark.symbol, mark.x, mark.y, mark.width ?? "", mark.height ?? "", mark.shape ?? ""]),
+  ];
+  const routeRows = [
+    ["Edge", "X", "Y", "Part", "Side"],
+    ...Object.entries(doc.bends ?? {}).flatMap(([id, bend]) => [
+      [id, bend.x, bend.y, "offset", ""],
+      ...(bend.from ? [[id, bend.from.at, 0, "from", bend.from.side]] : []),
+      ...(bend.to ? [[id, bend.to.at, 0, "to", bend.to.side]] : []),
+      ...(bend.corners ?? []).map((corner) => [id, corner.x, corner.y, "corner", ""]),
+    ]),
+  ];
   XLSX.utils.book_append_sheet(book, XLSX.utils.aoa_to_sheet(layoutRows), "Layout");
+  XLSX.utils.book_append_sheet(book, XLSX.utils.aoa_to_sheet(symbolRows), "Symbols");
+  const strokeRows = [["Edge", "Color", "Dash", "Arrow"], ...Object.entries(doc.strokes ?? {}).map(([id, style]) => [id, style.color, style.dash, style.arrow ?? ""])];
+  const linkRows = [["Id", "From", "To", "Kind", "Label"], ...(doc.links ?? []).map((link) => [link.id, link.from, link.to, link.kind, link.label])];
+  const stackRows = [
+    ["Layer", "Id"],
+    ...(doc.stack?.back ?? []).map((id) => ["back", id]),
+    ...(doc.stack?.front ?? []).map((id) => ["front", id]),
+  ];
+  XLSX.utils.book_append_sheet(book, XLSX.utils.aoa_to_sheet(routeRows), "Routes");
+  XLSX.utils.book_append_sheet(book, XLSX.utils.aoa_to_sheet(strokeRows), "Strokes");
+  XLSX.utils.book_append_sheet(book, XLSX.utils.aoa_to_sheet(linkRows), "Links");
+  XLSX.utils.book_append_sheet(book, XLSX.utils.aoa_to_sheet(stackRows), "Stack");
   return book;
 }
 

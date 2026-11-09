@@ -1,4 +1,4 @@
-import { blankFlow, snap, type Flow, type FlowKind, type MifaDocument, type SymbolId } from "./document";
+import { blankFlow, buildSheet, createId, snap, type Flow, type FlowKind, type MifaDocument, type SymbolId } from "./document";
 
 export const STAMPS = [
   { id: "supplier", label: "Supplier", symbol: "supplier" },
@@ -65,6 +65,30 @@ export function nodeMatches(flow: Flow, id: string) {
   if (kind === "emptiesDock") return flow.emptiesDock.trim() === rest;
   if (kind === "it") return flow.system.trim() === rest;
   return false;
+}
+
+export function omitSymbols(doc: MifaDocument, ids: string[]): MifaDocument {
+  const gone = new Set(ids.filter(Boolean));
+  if (!gone.size) return doc;
+  let flows = doc.flows;
+  const positions = { ...doc.positions };
+  const glyphs = { ...(doc.glyphs ?? {}) };
+  const sizes = doc.sizes ? { ...doc.sizes } : undefined;
+  for (const id of gone) {
+    if (id.startsWith("mark-")) continue;
+    flows = flows.map((flow) => stripNode(flow, id));
+    if (!flows.some((flow) => nodeMatches(flow, id))) {
+      delete positions[id];
+      delete glyphs[id];
+      if (sizes) delete sizes[id];
+    }
+  }
+  const marks = doc.marks?.filter((mark) => !gone.has(mark.id));
+  const links = doc.links?.filter((link) => !gone.has(link.from) && !gone.has(link.to));
+  const stack = doc.stack
+    ? { back: doc.stack.back.filter((id) => !gone.has(id)), front: doc.stack.front.filter((id) => !gone.has(id)) }
+    : undefined;
+  return { ...doc, flows, positions, glyphs, ...(sizes ? { sizes } : {}), ...(marks ? { marks } : {}), ...(links ? { links } : {}), ...(stack ? { stack } : {}) };
 }
 
 export function stripNode(flow: Flow, id: string): Flow {
@@ -252,24 +276,47 @@ export function retargetNode(doc: MifaDocument, nodeId: string, flowId: string, 
   return placeSymbol(next, flowId, stamp, at);
 }
 
-function applyLink(flow: Flow, fromId: string, toId: string, kind: FlowKind) {
+function writeTransport(flow: Flow, key: keyof Flow, label: string) {
+  if (!String(flow[key]).trim()) (flow as unknown as Record<string, string>)[key] = label;
+}
+
+function applyLink(flow: Flow, fromId: string, toId: string, kind: FlowKind, label = "") {
   const next = { ...flow };
   const fromKind = splitNode(fromId).kind;
+  const toKind = splitNode(toId).kind;
   if (kind === "information") {
     if (!next.system.trim()) {
-      next.system = fromKind === "it" ? splitNode(fromId).rest : splitNode(toId).kind === "it" ? splitNode(toId).rest : "IT";
+      next.system = fromKind === "it" ? splitNode(fromId).rest : toKind === "it" ? splitNode(toId).rest : "IT";
     }
-    if (!next.trigger.trim()) next.trigger = "Info";
+    if (!next.trigger.trim()) next.trigger = label || "Info";
   }
   if (kind === "empty") {
-    if (fromKind === "line" && !next.emptiesFromLine.trim()) next.emptiesFromLine = "Return";
-    if (fromKind === "kitting" && !next.emptiesFromKitting.trim()) next.emptiesFromKitting = "Return";
-    if (fromKind === "sequencing" && !next.emptiesFromSequencing.trim()) next.emptiesFromSequencing = "Return";
+    const word = label || "Return";
+    if (fromKind === "line" && !next.emptiesFromLine.trim()) next.emptiesFromLine = word;
+    if (fromKind === "kitting" && !next.emptiesFromKitting.trim()) next.emptiesFromKitting = word;
+    if (fromKind === "sequencing" && !next.emptiesFromSequencing.trim()) next.emptiesFromSequencing = word;
+  }
+  if (kind === "material" && label) {
+    if (fromKind === "supplier" || toKind === "dock" || toKind === "buffer") writeTransport(next, "transportTruck", label);
+    else if (toKind === "warehouse") writeTransport(next, "transportToWarehouse", label);
+    else if (toKind === "kitting") writeTransport(next, "transportToKitting", label);
+    else if (toKind === "sequencing") writeTransport(next, "transportToSequencing", label);
+    else if (toKind === "line" && fromKind === "sequencing") writeTransport(next, "transportSeqToLine", label);
+    else if (toKind === "line") writeTransport(next, "transportKitToLine", label);
   }
   return next;
 }
 
-export function linkNodes(doc: MifaDocument, fromId: string, toId: string, flowId: string | null, kind: FlowKind): MifaDocument {
+export function connectSymbols(doc: MifaDocument, fromId: string, toId: string, kind: FlowKind, label = ""): { document: MifaDocument; edgeId: string } {
+  if (!fromId || !toId || fromId === toId) return { document: doc, edgeId: "" };
+  const id = createId("link");
+  return {
+    document: { ...doc, links: [...(doc.links ?? []), { id, from: fromId, to: toId, kind, label }] },
+    edgeId: id,
+  };
+}
+
+export function linkNodes(doc: MifaDocument, fromId: string, toId: string, flowId: string | null, kind: FlowKind, label = ""): MifaDocument {
   if (!fromId || !toId || fromId === toId) return doc;
   let flow = (flowId ? doc.flows.find((item) => item.id === flowId) : undefined) ?? doc.flows.find((item) => nodeMatches(item, fromId));
   let flows = doc.flows;
@@ -278,6 +325,6 @@ export function linkNodes(doc: MifaDocument, fromId: string, toId: string, flowI
     flow.building = doc.project.shop || "";
     flows = [...doc.flows, flow];
   }
-  const next = applyLink(absorb(absorb({ ...flow }, fromId), toId), fromId, toId, kind);
+  const next = applyLink(absorb(absorb({ ...flow }, fromId), toId), fromId, toId, kind, label);
   return { ...doc, flows: flows.map((item) => (item.id === next.id ? next : item)) };
 }
