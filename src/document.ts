@@ -1,3 +1,5 @@
+import { ART_BY_ID } from "./symbol-art";
+
 export const SYMBOLS = [
   { id: "rectangle", label: "Rectangle" },
   { id: "supplier", label: "Supplier" },
@@ -88,6 +90,8 @@ export type Mark = {
   width?: number;
   height?: number;
   shape?: MarkShape;
+  /** Id of a traced drawing from the symbol folders. */
+  artwork?: string;
 };
 
 export type ArrowEnds = "end" | "start" | "both" | "none";
@@ -134,6 +138,8 @@ export type MifaDocument = {
   strokes?: Record<string, StrokeStyle>;
   links?: DrawnLink[];
   stack?: StackOrder;
+  /** Moved or resized transport icons, keyed by the line and the word that produced them. */
+  icons?: Record<string, { x: number; y: number; width: number; height: number }>;
 };
 
 export type Side = "n" | "e" | "s" | "w";
@@ -963,7 +969,19 @@ export function parseMifaDocument(value: unknown): MifaDocument | null {
     strokes: readStrokes(doc.strokes),
     links: readLinks(doc.links),
     stack: readStack(doc.stack),
+    icons: readIcons(doc.icons),
   };
+}
+
+function readIcons(value: unknown): MifaDocument["icons"] {
+  const icons: NonNullable<MifaDocument["icons"]> = {};
+  if (!value || typeof value !== "object") return icons;
+  for (const [id, box] of Object.entries(value)) {
+    if (!box || typeof box.x !== "number" || typeof box.y !== "number" || typeof box.width !== "number" || typeof box.height !== "number") continue;
+    if (box.width <= 0 || box.height <= 0) continue;
+    icons[id] = { x: box.x, y: box.y, width: box.width, height: box.height };
+  }
+  return icons;
 }
 
 function readStack(value: unknown): StackOrder {
@@ -1039,7 +1057,8 @@ function readMarks(value: unknown): Mark[] {
     const width = typeof mark.width === "number" && mark.width > 0 ? mark.width : undefined;
     const height = typeof mark.height === "number" && mark.height > 0 ? mark.height : undefined;
     const shape = mark.shape === "text" || mark.shape === "rectangle" || mark.shape === "ellipse" ? mark.shape : undefined;
-    marks.push({ id: mark.id, name: mark.name, symbol: mark.symbol as SymbolId, x: mark.x, y: mark.y, width, height, shape });
+    const artwork = typeof mark.artwork === "string" && ART_BY_ID[mark.artwork] ? mark.artwork : undefined;
+    marks.push({ id: mark.id, name: mark.name, symbol: mark.symbol as SymbolId, x: mark.x, y: mark.y, width, height, shape, ...(artwork ? { artwork } : {}) });
   }
   return marks;
 }

@@ -11,6 +11,8 @@ export type LibraryItem = {
   symbol: SymbolId;
   stamp?: StampId;
   link?: { kind: FlowKind; label: string };
+  /** Traced drawing from the symbol folders. */
+  artwork?: string;
 };
 
 export const LIBRARY_FAMILIES: LibraryFamily[] = ["Process", "Inventories", "Material", "Information"];

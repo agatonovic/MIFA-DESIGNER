@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { connectSymbols, linkNodes, omitSymbols, placeSymbol } from "./canvas";
 import { arrange, arrowOnScreen, arrowTowardScreen, bendFromCorner, bendFromMove, blankFlow, buildSheet, centerPortsOnMove, edgeRoute, emptyDocument, exampleDocument, paintLayers, parseMifaDocument, pathForFlows, straightenConnection, type SheetNode } from "./document";
 import { documentToWorkbook, workbookToDocument } from "./excel";
+import { SYMBOL_ART, transportArtwork } from "./symbol-art";
 
 describe("MIFA sheet built from the flow register", () => {
   const doc = exampleDocument();
@@ -126,6 +127,45 @@ describe("MIFA sheet built from the flow register", () => {
     const restored = workbookToDocument(documentToWorkbook(withMark));
     expect(restored.marks?.[0]).toMatchObject({ name: "Heijunka", symbol: "it", x: 40, y: 80 });
     expect(parseMifaDocument(JSON.parse(JSON.stringify(withMark)))?.marks?.[0].name).toBe("Heijunka");
+  });
+
+  it("keeps a traced symbol drawing with the mark", () => {
+    expect(SYMBOL_ART.map((art) => art.folder).sort()).toEqual([
+      "Inventories/Big Container",
+      "Inventories/Big Container",
+      "Inventories/Small Box (Pallet)",
+      "Inventories/Small Box (Pallet)",
+      "Materials",
+      "Materials",
+      "Materials",
+      "Materials",
+      "Materials",
+      "Materials",
+      "Materials",
+      "Materials",
+      "Materials/Forklift SB Delivery",
+      "Materials/Forklift SB Delivery",
+      "Process",
+      "Process",
+      "Process",
+    ]);
+    expect(SYMBOL_ART.every((art) => art.paths.length > 0)).toBe(true);
+    const withArt = {
+      ...emptyDocument(),
+      flows: [blankFlow("1")],
+      marks: [{ id: "mark-1", name: "Supplier", symbol: "rectangle" as const, x: 8, y: 16, artwork: "process-supplier" }],
+    };
+    expect(workbookToDocument(documentToWorkbook(withArt)).marks?.[0].artwork).toBe("process-supplier");
+    expect(parseMifaDocument(JSON.parse(JSON.stringify(withArt)))?.marks?.[0].artwork).toBe("process-supplier");
+  });
+
+  it("turns a transport word into its symbol and keeps a moved icon", () => {
+    expect(transportArtwork("Truck")?.id).toBe("materials-truck-transfer");
+    expect(transportArtwork("FORKLIFT")?.id).toBe("materials-forklift-transfer");
+    expect(transportArtwork("Tugger")?.id).toBe("materials-tugger-train-transfer-shelf-carts");
+    expect(transportArtwork("Kanban")).toBeUndefined();
+    const saved = { ...emptyDocument(), flows: [blankFlow("1")], icons: { "a>b:material::Truck": { x: 12, y: 20, width: 80, height: 36 } } };
+    expect(workbookToDocument(documentToWorkbook(saved)).icons?.["a>b:material::Truck"]).toEqual({ x: 12, y: 20, width: 80, height: 36 });
   });
 
   it("removes a corner and centers the symbols on a straight line", () => {

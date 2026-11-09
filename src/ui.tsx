@@ -1,17 +1,74 @@
-import { cloneElement, type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactElement } from "react";
+import { cloneElement, useRef, useState, type ButtonHTMLAttributes, type HTMLAttributes, type InputHTMLAttributes, type ReactElement } from "react";
+import { createPortal } from "react-dom";
 import { cn } from "./cn";
+
+export function Tip({ label, children }: { label: string; children: ReactElement<HTMLAttributes<HTMLElement>> }) {
+  const [box, setBox] = useState<{ x: number; y: number; above: boolean } | null>(null);
+  const timer = useRef<number | null>(null);
+
+  function show(target: HTMLElement) {
+    if (timer.current) window.clearTimeout(timer.current);
+    timer.current = window.setTimeout(() => {
+      const rect = target.getBoundingClientRect();
+      const above = rect.bottom + 36 > window.innerHeight;
+      setBox({ x: rect.left + rect.width / 2, y: above ? rect.top - 8 : rect.bottom + 8, above });
+    }, 250);
+  }
+
+  function hide() {
+    if (timer.current) window.clearTimeout(timer.current);
+    timer.current = null;
+    setBox(null);
+  }
+
+  return (
+    <>
+      {cloneElement(children, {
+        onMouseEnter: (event) => {
+          children.props.onMouseEnter?.(event);
+          show(event.currentTarget);
+        },
+        onMouseLeave: (event) => {
+          children.props.onMouseLeave?.(event);
+          hide();
+        },
+        onFocus: (event) => {
+          children.props.onFocus?.(event);
+          show(event.currentTarget);
+        },
+        onBlur: (event) => {
+          children.props.onBlur?.(event);
+          hide();
+        },
+      })}
+      {box
+        ? createPortal(
+            <span
+              role="tooltip"
+              className="pointer-events-none fixed z-[80] rounded-md bg-[#202124] px-2 py-1 text-[11px] font-medium whitespace-nowrap text-white shadow-md"
+              style={{ left: box.x, top: box.y, transform: box.above ? "translate(-50%, -100%)" : "translate(-50%, 0)" }}
+            >
+              {label}
+            </span>,
+            document.body,
+          )
+        : null}
+    </>
+  );
+}
 
 export function Button({
   variant = "outline",
   size = "default",
   className,
   type = "button",
+  title,
   ...props
 }: ButtonHTMLAttributes<HTMLButtonElement> & {
   variant?: "ghost" | "outline" | "secondary" | "destructive";
   size?: "default" | "icon-sm";
 }) {
-  return (
+  const button = (
     <button
       type={type}
       className={cn(
@@ -27,6 +84,8 @@ export function Button({
       {...props}
     />
   );
+  if (!title) return button;
+  return <Tip label={title}>{button}</Tip>;
 }
 
 export function Input({ className, ...props }: InputHTMLAttributes<HTMLInputElement>) {
@@ -48,8 +107,7 @@ export function Hint({
 }: {
   label: string;
   shortcut?: string;
-  children: ReactElement<{ title?: string }>;
+  children: ReactElement<HTMLAttributes<HTMLElement>>;
 }) {
-  const title = shortcut ? `${label} (${shortcut})` : label;
-  return cloneElement(children, { title: children.props.title ?? title });
+  return <Tip label={shortcut ? `${label} (${shortcut})` : label}>{children}</Tip>;
 }

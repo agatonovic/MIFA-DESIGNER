@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { FolderPlus, RotateCcw, Save, Trash2 } from "lucide-react";
 import type { Archive } from "./archive";
-import { Button } from "./ui";
+import { Button, Tip } from "./ui";
 
 export function ArchivePanel({
   archive,
@@ -41,9 +41,11 @@ export function ArchivePanel({
         <div className="min-h-0 flex-1 overflow-auto p-2">
           {archive.folders.map((item) => (
             <div key={item.id} className={item.id === folder?.id ? "mb-1 rounded-md bg-[#e8f0fe]" : "mb-1 rounded-md"}>
-              <button type="button" className="w-full truncate px-2 py-1.5 text-left text-sm" onClick={() => onBrowse(item.id)}>
-                {item.name}
-              </button>
+              <Tip label={item.name}>
+                <button type="button" className="w-full truncate px-2 py-1.5 text-left text-sm" onClick={() => onBrowse(item.id)}>
+                  {item.name}
+                </button>
+              </Tip>
               {item.id === folder?.id ? (
                 <div className="flex items-center gap-1 px-2 pb-2">
                   <input
@@ -52,7 +54,7 @@ export function ArchivePanel({
                     onChange={(event) => onRenameFolder(item.id, event.target.value)}
                     className="h-7 min-w-0 flex-1 rounded-md border border-[#d0d7de] px-2 text-sm"
                   />
-                  <Button variant="ghost" size="icon-sm" aria-label={`Delete folder ${item.name}`} disabled={!canRemoveFolder(archive, item.id)} onClick={() => setPending({ kind: "folder", folderId: item.id })}>
+                  <Button variant="ghost" size="icon-sm" title="Delete folder" aria-label={`Delete folder ${item.name}`} disabled={!canRemoveFolder(archive, item.id)} onClick={() => setPending({ kind: "folder", folderId: item.id })}>
                     <Trash2 />
                   </Button>
                 </div>
@@ -83,7 +85,7 @@ export function ArchivePanel({
       <div className="flex min-h-0 flex-col border-r border-[#d0d7de]">
         <header className="flex items-center justify-between border-b border-[#d0d7de] px-3 py-2">
           <span className="text-[11px] font-semibold tracking-wide text-[#5f6368] uppercase">MIFAs</span>
-          <Button variant="outline" size="default" className="h-7" onClick={() => folder && onAddMifa(folder.id)}>
+          <Button variant="outline" size="default" className="h-7" title="New MIFA" onClick={() => folder && onAddMifa(folder.id)}>
             New MIFA
           </Button>
         </header>
@@ -94,10 +96,12 @@ export function ArchivePanel({
               return (
                 <div key={mifa.id} className={editing ? "mb-1 rounded-md border border-[#1b4f9c] px-2 py-1.5" : "mb-1 rounded-md border border-transparent px-2 py-1.5 hover:bg-[#f4f6f8]"}>
                   <div className="flex items-center gap-2">
-                    <button type="button" className="min-w-0 flex-1 truncate text-left text-sm font-medium" onClick={() => onOpen(folder.id, mifa.id)}>
-                      {mifa.document.project.name || "Untitled MIFA"}
-                    </button>
-                    <Button variant="ghost" size="icon-sm" aria-label={`Delete ${mifa.document.project.name || "MIFA"}`} disabled={mifaCount <= 1} onClick={() => setPending({ kind: "mifa", folderId: folder.id, mifaId: mifa.id })}>
+                    <Tip label={mifa.document.project.name || "Untitled MIFA"}>
+                      <button type="button" className="min-w-0 flex-1 truncate text-left text-sm font-medium" onClick={() => onOpen(folder.id, mifa.id)}>
+                        {mifa.document.project.name || "Untitled MIFA"}
+                      </button>
+                    </Tip>
+                    <Button variant="ghost" size="icon-sm" title="Delete MIFA" aria-label={`Delete ${mifa.document.project.name || "MIFA"}`} disabled={mifaCount <= 1} onClick={() => setPending({ kind: "mifa", folderId: folder.id, mifaId: mifa.id })}>
                       <Trash2 />
                     </Button>
                   </div>
@@ -114,6 +118,7 @@ export function ArchivePanel({
               <div className="mt-2 flex gap-2">
                 <Button
                   variant="destructive"
+                  title="Delete"
                   onClick={() => {
                     if (pending.kind === "folder") onRemoveFolder(pending.folderId);
                     else if (pending.mifaId) onRemoveMifa(pending.folderId, pending.mifaId);
@@ -122,7 +127,7 @@ export function ArchivePanel({
                 >
                   Delete
                 </Button>
-                <Button variant="ghost" onClick={() => setPending(null)}>
+                <Button variant="ghost" title="Cancel" onClick={() => setPending(null)}>
                   Cancel
                 </Button>
               </div>
@@ -133,7 +138,7 @@ export function ArchivePanel({
       <div className="flex min-h-0 flex-col">
         <header className="flex items-center justify-between gap-2 border-b border-[#d0d7de] px-3 py-2">
           <span className="min-w-0 truncate text-[11px] font-semibold tracking-wide text-[#5f6368] uppercase">{open ? open.mifa.document.project.name : "Versions"}</span>
-          <Button variant="outline" size="default" className="h-7" onClick={onSave}>
+          <Button variant="outline" size="default" className="h-7" title="Save version" onClick={onSave}>
             <Save />
             Save version
           </Button>
@@ -146,7 +151,7 @@ export function ArchivePanel({
                   <p className="truncate text-sm">{version.name || "Untitled MIFA"}</p>
                   <p className="text-[11px] text-[#5f6368]">{formatSavedAt(version.savedAt)}</p>
                 </div>
-                <Button variant="ghost" size="default" className="h-7" onClick={() => onRestore(version.id)}>
+                <Button variant="ghost" size="default" className="h-7" title="Restore" onClick={() => onRestore(version.id)}>
                   <RotateCcw />
                   Restore
                 </Button>

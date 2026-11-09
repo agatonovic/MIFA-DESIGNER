@@ -1,7 +1,7 @@
 import { ArchivePanel } from "./archive-panel";
 import { ARCHIVE_KEY, addFolder, addMifa, createArchive, openDocument, parseArchive, remember, removeFolder, removeMifa, renameFolder, restoreVersion, saveVersion, type Archive } from "./archive";
-import { SymbolShape } from "./symbol-shape";
-import { Button, Input } from "./ui";
+import { SymbolShape, VectorArt } from "./symbol-shape";
+import { Button, Input, Tip } from "./ui";
 import { cn } from "./cn";
 import { STAMPS, connectSymbols, omitSymbols, placeSymbol, retargetNode, type StampId } from "./canvas";
 import {
@@ -35,7 +35,8 @@ import {
   type SheetNode,
 } from "./document";
 import { downloadWorkbook, FLOW_COLUMNS, FLOW_GROUPS, readWorkbook } from "./excel";
-import { LIBRARY, LIBRARY_FAMILIES, type LibraryItem } from "./library";
+import { LIBRARY, type LibraryItem } from "./library";
+import { ART_BY_ID, SYMBOL_ART, artBox, transportArtwork, type SymbolArt } from "./symbol-art";
 import { BookOpen, Circle, Download, Eye, FilePlus, Folder, Minus, MousePointer2, PenLine, Plus, Redo2, Shapes, Square, Table2, Trash2, Type, Undo2, Upload, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 
@@ -140,6 +141,10 @@ export function MifaDesigner() {
   const sheet = useMemo(() => buildSheet(doc), [doc]);
   const marks = doc.marks ?? [];
   const drawnEdges: SheetEdge[] = (doc.links ?? []).map((link) => ({ id: link.id, from: link.from, to: link.to, kind: link.kind, label: link.label, flowIds: [] }));
+  const layers = paintLayers([...sheet.nodes.map((node) => node.id), ...marks.map((mark) => mark.id)], doc.stack);
+  const visibleEdges = [...sheet.edges, ...drawnEdges];
+  const lanes = laneMap(visibleEdges);
+  const lineIcons = iconsOnLines(doc, visibleEdges, nodeBox, lanes);
   boxesRef.current = [
     ...sheet.nodes.map((node) => ({ id: node.id, x: node.x, y: node.y, width: node.width, height: node.height })),
     ...marks.map((mark) => ({
@@ -149,10 +154,8 @@ export function MifaDesigner() {
       width: mark.width ?? SYMBOL_SIZE[mark.symbol].width,
       height: mark.height ?? SYMBOL_SIZE[mark.symbol].height,
     })),
+    ...lineIcons.map((icon) => ({ id: icon.id, x: icon.x, y: icon.y, width: icon.width, height: icon.height })),
   ];
-  const layers = paintLayers([...sheet.nodes.map((node) => node.id), ...marks.map((mark) => mark.id)], doc.stack);
-  const visibleEdges = [...sheet.edges, ...drawnEdges];
-  const lanes = laneMap(visibleEdges);
   const selectedEdge = visibleEdges.find((edge) => edge.id === selectedEdgeId) ?? null;
   const sheetWidth = SHEET_WIDTH;
   const sheetHeight = SHEET_HEIGHT;
@@ -519,6 +522,13 @@ export function MifaDesigner() {
   }
 
   function chooseLibrary(item: LibraryItem) {
+    if (item.artwork) {
+      setArmed(item);
+      setTool("add");
+      setLinkFrom(null);
+      setMode("design");
+      return;
+    }
     setArmed(item);
     if (item.link) {
       setLinkKind(item.link.kind);
@@ -550,6 +560,18 @@ export function MifaDesigner() {
 
   function placeChosen(item: LibraryItem | null, point: { x: number; y: number }) {
     if (item?.link) return;
+    if (item?.artwork && ART_BY_ID[item.artwork]) {
+      const size = artBox(ART_BY_ID[item.artwork]);
+      const mark: Mark = { id: createId("mark"), name: item.name, symbol: "rectangle", artwork: item.artwork, x: snap(point.x), y: snap(point.y), width: size.width, height: size.height };
+      commit((current) => ({ ...current, marks: [...(current.marks ?? []), mark] }));
+      setSelectedNodeId(mark.id);
+      setGroup([mark.id]);
+      setSelectedFlowId(null);
+      setSelectedEdgeId(null);
+      setArmed(null);
+      setTool("select");
+      return;
+    }
     if (item && !item.stamp) {
       const size = SYMBOL_SIZE[item.symbol];
       const mark = { id: createId("mark"), name: "", symbol: item.symbol, x: snap(point.x), y: snap(point.y), width: size.width, height: size.height };
@@ -823,11 +845,19 @@ export function MifaDesigner() {
           ...current.present,
           positions: {
             ...current.present.positions,
-            ...Object.fromEntries(Object.entries(starts).filter(([itemId]) => !itemId.startsWith("mark-")).map(([itemId, box]) => [itemId, { x: box.x + dx, y: box.y + dy }])),
+            ...Object.fromEntries(Object.entries(starts).filter(([itemId]) => !itemId.startsWith("mark-") && !itemId.startsWith("icon:")).map(([itemId, box]) => [itemId, { x: box.x + dx, y: box.y + dy }])),
           },
           marks: (current.present.marks ?? []).map((mark) => (starts[mark.id] ? { ...mark, x: starts[mark.id].x + dx, y: starts[mark.id].y + dy } : mark)),
+          icons: {
+            ...current.present.icons,
+            ...Object.fromEntries(
+              Object.entries(starts)
+                .filter(([itemId]) => itemId.startsWith("icon:"))
+                .map(([itemId, box]) => [itemId.slice(5), { x: box.x + dx, y: box.y + dy, width: box.width, height: box.height }]),
+            ),
+          },
         },
-        Object.keys(starts),
+        Object.keys(starts).filter((id) => !id.startsWith("icon:")),
       ),
     }));
   }
@@ -953,7 +983,9 @@ export function MifaDesigner() {
         onPointerMove={onNodePointerMove}
         onPointerUp={onNodePointerUp}
       >
-        {mark.shape ? (
+        {mark.artwork && ART_BY_ID[mark.artwork] ? (
+          <VectorArt art={ART_BY_ID[mark.artwork]} width={mark.width ?? 128} height={mark.height ?? 72} selected={selectedNodeId === mark.id} />
+        ) : mark.shape ? (
           <BasicShape
             shape={mark.shape}
             width={mark.width ?? 128}
@@ -994,7 +1026,7 @@ export function MifaDesigner() {
   return (
     <div className="flex h-full min-h-0 flex-col bg-[#f4f6f8] text-[#202124]">
       <header className="flex h-14 shrink-0 items-center gap-2 border-b border-[#d0d7de] bg-white px-3">
-        <Button variant={archiveOpen ? "secondary" : "outline"} size="default" className="h-8 max-w-52 overflow-hidden" title="MIFAs" aria-label="MIFAs" aria-pressed={archiveOpen} onClick={() => setArchiveOpen((open) => !open)}>
+        <Button variant={archiveOpen ? "secondary" : "outline"} size="default" className="h-8 max-w-52 overflow-hidden" title={archiveOpen ? "Hide MIFAs" : "Show MIFAs"} aria-label="MIFAs" aria-pressed={archiveOpen} onClick={() => setArchiveOpen((open) => !open)}>
           <Folder />
           <span className="truncate">{archive.folders.find((folder) => folder.id === archive.openFolderId)?.name ?? "MIFAs"}</span>
         </Button>
@@ -1033,7 +1065,7 @@ export function MifaDesigner() {
             variant={dataOpen ? "secondary" : "outline"}
             size="icon-sm"
             className="size-8"
-            title="Data"
+            title={dataOpen ? "Hide data" : "Show data"}
             aria-label={dataOpen ? "Hide data" : "Show data"}
             aria-pressed={dataOpen}
             onClick={() => setDataOpen((open) => !open)}
@@ -1041,44 +1073,29 @@ export function MifaDesigner() {
             <Table2 />
           </Button>
           <div className="ml-1 flex items-center gap-0.5 rounded-lg bg-[#e8eaed] p-0.5">
-            <button
-              type="button"
-              title="Design"
-              aria-label="Design"
-              className={cn("flex size-7 items-center justify-center rounded-md", mode === "design" ? "bg-white shadow-sm" : "text-[#5f6368]")}
-              onClick={() => {
-                setMode("design");
-                setHoverFlowIds(null);
-              }}
-            >
-              <PenLine className="size-4" />
-            </button>
-            <button
-              type="button"
-              title="Symbols"
-              aria-label="Symbols"
-              aria-pressed={libraryOpen}
-              className={cn("flex size-7 items-center justify-center rounded-md", libraryOpen ? "bg-white shadow-sm" : "text-[#5f6368]")}
-              onClick={() => {
-                if (mode !== "design") {
+            <Tip label="Edit">
+              <button
+                type="button"
+                aria-label="Edit"
+                className={cn("flex size-7 items-center justify-center rounded-md", mode === "design" ? "bg-white shadow-sm" : "text-[#5f6368]")}
+                onClick={() => {
                   setMode("design");
-                  setLibraryOpen(true);
-                  return;
-                }
-                setLibraryOpen((open) => !open);
-              }}
-            >
-              <Shapes className="size-4" />
-            </button>
-            <button
-              type="button"
-              title="Preview"
-              aria-label="Preview"
-              className={cn("flex size-7 items-center justify-center rounded-md", mode === "preview" ? "bg-white shadow-sm" : "text-[#5f6368]")}
-              onClick={() => setMode("preview")}
-            >
-              <Eye className="size-4" />
-            </button>
+                  setHoverFlowIds(null);
+                }}
+              >
+                <PenLine className="size-4" />
+              </button>
+            </Tip>
+            <Tip label="Preview">
+              <button
+                type="button"
+                aria-label="Preview"
+                className={cn("flex size-7 items-center justify-center rounded-md", mode === "preview" ? "bg-white shadow-sm" : "text-[#5f6368]")}
+                onClick={() => setMode("preview")}
+              >
+                <Eye className="size-4" />
+              </button>
+            </Tip>
           </div>
         </div>
       </header>
@@ -1126,7 +1143,7 @@ export function MifaDesigner() {
         />
       ) : null}
       {libraryOpen && mode === "design" ? (
-        <div className="absolute top-0 bottom-0 left-[4.75rem] z-40 w-80 border-r border-[#d0d7de] bg-white shadow-lg">
+        <div className="absolute top-0 bottom-0 left-[4.75rem] z-40 w-[680px] border-r border-[#d0d7de] bg-white shadow-lg">
           <SymbolLibrary
             armedId={armed?.id ?? null}
             onClose={() => {
@@ -1230,7 +1247,7 @@ export function MifaDesigner() {
             </div>
             {mode === "design" && tool === "select" && selectedNodeId ? (
               <ResizeHandles
-                box={boxFor(sheet.nodes, marks, selectedNodeId)}
+                box={boxFor(sheet.nodes, marks, selectedNodeId, lineIcons)}
                 handles={
                   sheet.nodes.find((node) => node.id === selectedNodeId)?.symbol === "production" ||
                   marks.find((mark) => mark.id === selectedNodeId)?.symbol === "production"
@@ -1238,7 +1255,7 @@ export function MifaDesigner() {
                     : undefined
                 }
                 onResizeStart={(handle, event) => {
-                  const box = boxFor(sheet.nodes, marks, selectedNodeId);
+                  const box = boxFor(sheet.nodes, marks, selectedNodeId, lineIcons);
                   if (!box) return;
                   event.stopPropagation();
                   event.preventDefault();
@@ -1249,7 +1266,7 @@ export function MifaDesigner() {
             ) : null}
             {mode === "design"
               ? boxesRef.current
-                  .filter((item) => item.id === selectedNodeId || item.id === linkFrom)
+                  .filter((item) => (item.id === selectedNodeId || item.id === linkFrom) && !item.id.startsWith("icon:"))
                   .map((item) => (
                     <EdgePorts key={`port-${item.id}`} box={item} armed={Boolean(linkFrom) || selectedNodeId === item.id} onConnect={() => onPort(item.id)} />
                   ))
@@ -1290,19 +1307,46 @@ export function MifaDesigner() {
                   ));
                 })
               : null}
+            {lineIcons.map((icon) => (
+              <div
+                key={icon.id}
+                role="button"
+                tabIndex={0}
+                aria-label={icon.art.name}
+                className={cn("absolute z-[12]", mode === "design" && tool === "select" && "cursor-grab active:cursor-grabbing")}
+                style={{ left: icon.x, top: icon.y, width: icon.width, height: icon.height, opacity: opacityFor("edge", icon.edgeId) }}
+                onPointerDown={(event) => {
+                  if (mode !== "design" || tool !== "select" || event.button !== 0) return;
+                  event.stopPropagation();
+                  setSelectedEdgeId(null);
+                  setLinkFrom(null);
+                  beginMove(icon.id, sheetPoint(event), icon);
+                  event.currentTarget.setPointerCapture(event.pointerId);
+                }}
+                onPointerMove={onNodePointerMove}
+                onPointerUp={onNodePointerUp}
+              >
+                <VectorArt art={icon.art} width={icon.width} height={icon.height} selected={selectedNodeId === icon.id} />
+              </div>
+            ))}
             <svg className="pointer-events-none absolute inset-0 z-10 h-full w-full">
               {visibleEdges.map((edge) => {
-                if (!edge.label) return null;
+                const caption = edge.label
+                  .split(" · ")
+                  .map((part) => part.trim())
+                  .filter((part) => part && !transportArtwork(part))
+                  .join(" · ");
+                if (!caption) return null;
                 const from = nodeBox(edge.from);
                 const to = nodeBox(edge.to);
                 if (!from || !to) return null;
                 const route = edgeRoute(from, to, doc.bends?.[edge.id], lanes.get(edge.id) ?? 0);
-                const textWidth = Math.max(28, edge.label.length * 6.4 + 12);
+                const textWidth = Math.max(28, caption.length * 6.4 + 12);
                 return (
                   <g key={edge.id} transform={`translate(${route.label.x} ${route.label.y})`} style={{ opacity: opacityFor("edge", edge.id) }}>
                     <rect x={-textWidth / 2} y={-10} width={textWidth} height={18} rx={3} fill="#fff" stroke="#d0d7de" />
                     <text y={3} textAnchor="middle" fill="#202124" fontSize={11} fontFamily="inherit">
-                      {edge.label}
+                      {caption}
                     </text>
                   </g>
                 );
@@ -1316,31 +1360,35 @@ export function MifaDesigner() {
           </div>
         </div>
         <div className="absolute right-3 bottom-3 flex items-center gap-1 rounded-lg border border-[#d0d7de] bg-white p-0.5 shadow-sm">
-          <Button variant="ghost" size="icon-sm" aria-label="Zoom out" onClick={() => zoomBy(1 / 1.15)}>
+          <Button variant="ghost" size="icon-sm" aria-label="Zoom out" title="Zoom out" onClick={() => zoomBy(1 / 1.15)}>
             <Minus />
           </Button>
-          <button
-            type="button"
-            className="h-7 min-w-12 rounded-md px-1 text-[12px] font-medium tabular-nums hover:bg-[#e8eaed]"
-            aria-label="Reset zoom"
-            onClick={() => {
-              const next = { zoom: 1, pan: { x: 32, y: 16 } };
-              viewRef.current = next;
-              setView(next);
-            }}
-          >
-            {Math.round(view.zoom * 100)}%
-          </button>
-          <Button variant="ghost" size="icon-sm" aria-label="Zoom in" onClick={() => zoomBy(1.15)}>
+          <Tip label="Reset zoom">
+            <button
+              type="button"
+              className="h-7 min-w-12 rounded-md px-1 text-[12px] font-medium tabular-nums hover:bg-[#e8eaed]"
+              aria-label="Reset zoom"
+              onClick={() => {
+                const next = { zoom: 1, pan: { x: 32, y: 16 } };
+                viewRef.current = next;
+                setView(next);
+              }}
+            >
+              {Math.round(view.zoom * 100)}%
+            </button>
+          </Tip>
+          <Button variant="ghost" size="icon-sm" aria-label="Zoom in" title="Zoom in" onClick={() => zoomBy(1.15)}>
             <Plus />
           </Button>
         </div>
         {mode === "design" && linkFrom ? (
           <div className="absolute top-3 left-1/2 z-40 flex -translate-x-1/2 items-center gap-3 rounded-lg border border-[#1b4f9c] bg-white px-3 py-2 text-sm shadow-sm">
             Click the symbol this line should reach.
-            <button type="button" className="font-medium text-[#1b4f9c]" onClick={() => setLinkFrom(null)}>
-              Cancel
-            </button>
+            <Tip label="Cancel line">
+              <button type="button" className="font-medium text-[#1b4f9c]" onClick={() => setLinkFrom(null)}>
+                Cancel
+              </button>
+            </Tip>
           </div>
         ) : null}
         {mode === "design" && selectedEdge && !linkFrom ? (
@@ -1428,9 +1476,11 @@ export function MifaDesigner() {
                         </td>
                       ))}
                       <td className="border-b border-[#e6e9ed] px-1">
-                        <button type="button" title="Delete flow" aria-label="Delete flow" className="flex size-6 items-center justify-center rounded text-[#c5221f] hover:bg-[#c5221f]/10" onClick={() => deleteFlow(flow.id)}>
-                          <Trash2 className="size-3.5" />
-                        </button>
+                        <Tip label="Delete flow">
+                          <button type="button" aria-label="Delete flow" className="flex size-6 items-center justify-center rounded text-[#c5221f] hover:bg-[#c5221f]/10" onClick={() => deleteFlow(flow.id)}>
+                            <Trash2 className="size-3.5" />
+                          </button>
+                        </Tip>
                       </td>
                     </tr>
                   );
@@ -1463,9 +1513,11 @@ export function MifaDesigner() {
 
 function MenuItem({ label, onClick }: { label: string; onClick: () => void }) {
   return (
-    <button type="button" className="block w-full px-3 py-1.5 text-left text-sm hover:bg-[#e8f0fe]" onClick={onClick}>
-      {label}
-    </button>
+    <Tip label={label}>
+      <button type="button" className="block w-full px-3 py-1.5 text-left text-sm hover:bg-[#e8f0fe]" onClick={onClick}>
+        {label}
+      </button>
+    </Tip>
   );
 }
 
@@ -1516,8 +1568,11 @@ function boxFor(
   nodes: SheetNode[],
   marks: { id: string; symbol: SheetNode["symbol"]; x: number; y: number; width?: number; height?: number }[],
   id: string | null,
+  icons: { id: string; x: number; y: number; width: number; height: number }[] = [],
 ) {
   if (!id) return null;
+  const icon = icons.find((item) => item.id === id);
+  if (icon) return { x: icon.x, y: icon.y, width: icon.width, height: icon.height };
   const node = nodes.find((item) => item.id === id);
   if (node) return { x: node.x, y: node.y, width: node.width, height: node.height };
   const mark = marks.find((item) => item.id === id);
@@ -1531,6 +1586,7 @@ function boxFor(
 }
 
 function applyBox(doc: MifaDocument, id: string, box: { x: number; y: number; width: number; height: number }): MifaDocument {
+  if (id.startsWith("icon:")) return { ...doc, icons: { ...doc.icons, [id.slice(5)]: box } };
   if (id.startsWith("mark-")) {
     return { ...doc, marks: (doc.marks ?? []).map((mark) => (mark.id === id ? { ...mark, ...box } : mark)) };
   }
@@ -1601,13 +1657,14 @@ function ResizeHandles({
   return (
     <>
       {(handles ?? RESIZE_HANDLES).map((handle) => (
-        <div
-          key={handle}
-          aria-label={`Resize ${handle}`}
-          className="absolute z-20 size-2.5 -translate-x-1/2 -translate-y-1/2 rounded-sm border border-[#1b4f9c] bg-white"
-          style={{ left: point[handle].left, top: point[handle].top, cursor: cursor[handle] }}
-          onPointerDown={(event) => onResizeStart(handle, event)}
-        />
+        <Tip key={handle} label="Resize">
+          <div
+            aria-label={`Resize ${handle}`}
+            className="absolute z-20 size-2.5 -translate-x-1/2 -translate-y-1/2 rounded-sm border border-[#1b4f9c] bg-white"
+            style={{ left: point[handle].left, top: point[handle].top, cursor: cursor[handle] }}
+            onPointerDown={(event) => onResizeStart(handle, event)}
+          />
+        </Tip>
       ))}
     </>
   );
@@ -1658,7 +1715,13 @@ function SymbolRail({
       <div className="mt-auto flex flex-col items-center gap-2 px-1.5 pb-2">
         {armed ? (
           <div className="flex flex-col items-center gap-1" title={armed.name}>
-            {armed.link ? <LineGlyph kind={armed.link.kind} /> : <SymbolShape symbol={armed.symbol} width={40} height={30} />}
+            {armed.artwork && ART_BY_ID[armed.artwork] ? (
+              <VectorArt art={ART_BY_ID[armed.artwork]} width={40} height={30} />
+            ) : armed.link ? (
+              <LineGlyph kind={armed.link.kind} />
+            ) : (
+              <SymbolShape symbol={armed.symbol} width={40} height={30} />
+            )}
             <span className="text-center text-[10px] leading-tight text-[#202124]">{armed.name}</span>
           </div>
         ) : null}
@@ -1668,44 +1731,119 @@ function SymbolRail({
   );
 }
 
+const SYMBOL_NAV: { id: string; name: string; children?: { id: string; name: string }[] }[] = [
+  { id: "Process", name: "Process" },
+  {
+    id: "Inventories",
+    name: "Inventories",
+    children: [
+      { id: "Inventories/Big Container", name: "Big Container" },
+      { id: "Inventories/Contolled inventory", name: "Contolled inventory" },
+      { id: "Inventories/Small Box (Pallet)", name: "Small Box (Pallet)" },
+      { id: "Inventories/Uncontroled Inventory", name: "Uncontroled Inventory" },
+    ],
+  },
+  {
+    id: "Materials",
+    name: "Materials",
+    children: [
+      { id: "Materials/Forklift LV Delivery", name: "Forklift LV Delivery" },
+      { id: "Materials/Forklift SB Delivery", name: "Forklift SB Delivery" },
+    ],
+  },
+  { id: "Information", name: "Information" },
+];
+
+function artLibraryItem(art: SymbolArt): LibraryItem {
+  const family = art.folder.startsWith("Inventories") ? "Inventories" : art.folder.startsWith("Materials") ? "Material" : "Process";
+  return { id: `art:${art.id}`, name: art.name, fr: art.folder, family, symbol: "rectangle", artwork: art.id };
+}
+
 function SymbolLibrary({ armedId, onPick, onClose }: { armedId: string | null; onPick: (item: LibraryItem) => void; onClose: () => void }) {
+  const [folder, setFolder] = useState("Process");
+  const [query, setQuery] = useState("");
+  const q = query.trim().toLowerCase();
+  const family = folder === "Process" || folder === "Inventories" || folder === "Information" ? folder : folder === "Materials" ? "Material" : null;
+  const drawings = SYMBOL_ART.filter((art) => (q ? `${art.name} ${art.folder}`.toLowerCase().includes(q) : art.folder === folder)).map(artLibraryItem);
+  const legacy = LIBRARY.filter((item) => {
+    const haystack = `${item.name} ${item.fr} ${item.family}`.toLowerCase();
+    if (q) return haystack.includes(q);
+    return family !== null && item.family === family;
+  });
+  const items = [...drawings, ...legacy];
   return (
     <div className="flex h-full flex-col bg-white">
       <div className="flex items-center justify-between border-b border-[#d0d7de] px-3 py-2">
         <span className="text-sm font-medium">Symbols</span>
-        <button type="button" aria-label="Close symbols" className="flex size-7 items-center justify-center rounded-md hover:bg-[#e8eaed]" onClick={onClose}>
-          <X className="size-4" />
-        </button>
+        <Tip label="Close symbols">
+          <button type="button" aria-label="Close symbols" className="flex size-7 items-center justify-center rounded-md hover:bg-[#e8eaed]" onClick={onClose}>
+            <X className="size-4" />
+          </button>
+        </Tip>
       </div>
-      <div className="min-h-0 flex-1 overflow-auto p-3">
-      <div className="flex flex-col gap-5">
-        {LIBRARY_FAMILIES.map((family) => (
-          <section key={family}>
-            <h2 className="mb-3 text-[11px] font-medium tracking-wide text-[#5f6368] uppercase">{family}</h2>
-            <div className="grid grid-cols-2 gap-2">
-              {LIBRARY.filter((item) => item.family === family).map((item) => (
-                <button
-                  key={item.id}
-                  type="button"
-                  aria-pressed={armedId === item.id}
-                  title={item.fr}
-                  onClick={() => onPick(item)}
-                  className={cn(
-                    "flex flex-col items-center gap-2 rounded-lg border bg-white px-2 py-3 text-center",
-                    armedId === item.id ? "border-[#1b4f9c] ring-1 ring-[#1b4f9c]" : "border-[#d0d7de] hover:bg-[#f8f9fa]",
-                  )}
-                >
-                  {item.link ? <LineGlyph kind={item.link.kind} /> : <SymbolShape symbol={item.symbol} width={72} height={48} />}
-                  <span className="text-[13px] leading-tight text-[#202124]">{item.name}</span>
-                  <span className="text-[11px] leading-tight text-[#5f6368]">{item.fr}</span>
-                </button>
+      <div className="border-b border-[#d0d7de] px-3 py-2">
+        <Input aria-label="Search symbols" placeholder="Search symbols" value={query} onChange={(event) => setQuery(event.target.value)} className="h-8" />
+      </div>
+      <div className="flex min-h-0 flex-1">
+        <nav aria-label="Symbol folders" className="w-52 shrink-0 overflow-auto border-r border-[#d0d7de] py-2">
+          {SYMBOL_NAV.map((group) => (
+            <div key={group.id}>
+              <FolderButton name={group.name} selected={!q && folder === group.id} onClick={() => { setFolder(group.id); setQuery(""); }} />
+              {group.children?.map((child) => (
+                <FolderButton key={child.id} name={child.name} nested selected={!q && folder === child.id} onClick={() => { setFolder(child.id); setQuery(""); }} />
               ))}
             </div>
-          </section>
-        ))}
-      </div>
+          ))}
+        </nav>
+        <div className="min-h-0 flex-1 overflow-auto p-3">
+          {items.length ? (
+            <div className="grid grid-cols-2 gap-2">
+              {items.map((item) => {
+                const art = item.artwork ? ART_BY_ID[item.artwork] : undefined;
+                const fit = art ? Math.min(88 / art.width, 52 / art.height) : 1;
+                return (
+                  <Tip key={item.id} label={item.artwork ? item.name : `${item.name} · ${item.fr}`}>
+                    <button
+                      type="button"
+                      aria-label={item.name}
+                      aria-pressed={armedId === item.id}
+                      onClick={() => onPick(item)}
+                      className={cn(
+                        "flex h-full flex-col items-center gap-2 rounded-lg border bg-white px-2 py-3 text-center",
+                        armedId === item.id ? "border-[#1b4f9c] ring-1 ring-[#1b4f9c]" : "border-[#d0d7de] hover:bg-[#f8f9fa]",
+                      )}
+                    >
+                      <span className="flex h-14 items-center justify-center">
+                        {art ? <VectorArt art={art} width={art.width * fit} height={art.height * fit} /> : item.link ? <LineGlyph kind={item.link.kind} /> : <SymbolShape symbol={item.symbol} width={72} height={48} />}
+                      </span>
+                      <span className="text-[13px] leading-tight text-[#202124]">{item.name}</span>
+                      <span className="text-[11px] leading-tight text-[#5f6368]">{q && item.artwork ? item.fr : item.artwork ? "" : item.fr}</span>
+                    </button>
+                  </Tip>
+                );
+              })}
+            </div>
+          ) : (
+            <p className="px-2 py-6 text-sm text-[#5f6368]">{q ? "No symbols match that search." : "No symbols in this folder yet."}</p>
+          )}
+        </div>
       </div>
     </div>
+  );
+}
+
+function FolderButton({ name, selected, nested = false, onClick }: { name: string; selected: boolean; nested?: boolean; onClick: () => void }) {
+  return (
+    <Tip label={name}>
+      <button
+        type="button"
+        aria-current={selected ? "page" : undefined}
+        className={cn("block w-full truncate px-3 py-1.5 text-left text-sm", nested && "pl-6 text-[13px]", selected ? "bg-[#e8f0fe] font-medium text-[#1b4f9c]" : "text-[#202124] hover:bg-[#f4f6f8]")}
+        onClick={onClick}
+      >
+        {name}
+      </button>
+    </Tip>
   );
 }
 
@@ -1733,46 +1871,46 @@ function LineStyleBar({
   return (
     <div className="absolute top-3 left-1/2 z-40 flex -translate-x-1/2 items-center gap-1 rounded-lg border border-[#d0d7de] bg-white p-1 shadow-sm">
       {arrows.map((item) => (
-        <button
-          key={item.id}
-          type="button"
-          aria-label={item.label}
-          aria-pressed={arrow === item.id}
-          title={item.label}
-          className={cn("flex h-7 w-8 items-center justify-center rounded-md", arrow === item.id ? "bg-[#e8f0fe]" : "hover:bg-[#e8eaed]")}
-          onClick={() => onArrow(item.id)}
-        >
-          <ArrowGlyph mode={item.id} color={color} />
-        </button>
+        <Tip key={item.id} label={item.label}>
+          <button
+            type="button"
+            aria-label={item.label}
+            aria-pressed={arrow === item.id}
+            className={cn("flex h-7 w-8 items-center justify-center rounded-md", arrow === item.id ? "bg-[#e8f0fe]" : "hover:bg-[#e8eaed]")}
+            onClick={() => onArrow(item.id)}
+          >
+            <ArrowGlyph mode={item.id} color={color} />
+          </button>
+        </Tip>
       ))}
       <span className="mx-1 h-5 w-px bg-[#d0d7de]" />
       {LINE_DASHES.map((item) => (
-        <button
-          key={item.id}
-          type="button"
-          aria-label={item.label}
-          aria-pressed={dash === item.dash}
-          title={item.label}
-          className={cn("flex h-7 w-10 items-center justify-center rounded-md", dash === item.dash ? "bg-[#e8f0fe]" : "hover:bg-[#e8eaed]")}
-          onClick={() => onDash(item.dash)}
-        >
-          <svg width="28" height="8" aria-hidden="true">
-            <line x1="1" y1="4" x2="27" y2="4" stroke={color} strokeWidth="1.8" strokeDasharray={item.dash || undefined} />
-          </svg>
-        </button>
+        <Tip key={item.id} label={item.label}>
+          <button
+            type="button"
+            aria-label={item.label}
+            aria-pressed={dash === item.dash}
+            className={cn("flex h-7 w-10 items-center justify-center rounded-md", dash === item.dash ? "bg-[#e8f0fe]" : "hover:bg-[#e8eaed]")}
+            onClick={() => onDash(item.dash)}
+          >
+            <svg width="28" height="8" aria-hidden="true">
+              <line x1="1" y1="4" x2="27" y2="4" stroke={color} strokeWidth="1.8" strokeDasharray={item.dash || undefined} />
+            </svg>
+          </button>
+        </Tip>
       ))}
       <span className="mx-1 h-5 w-px bg-[#d0d7de]" />
       {LINE_COLORS.map((item) => (
-        <button
-          key={item.id}
-          type="button"
-          aria-label={item.label}
-          aria-pressed={color.toLowerCase() === item.color}
-          title={item.label}
-          className={cn("size-5 rounded-full border", color.toLowerCase() === item.color ? "border-[#1b4f9c] ring-2 ring-[#1b4f9c]" : "border-[#d0d7de]")}
-          style={{ background: item.color }}
-          onClick={() => onColor(item.color)}
-        />
+        <Tip key={item.id} label={item.label}>
+          <button
+            type="button"
+            aria-label={item.label}
+            aria-pressed={color.toLowerCase() === item.color}
+            className={cn("size-5 rounded-full border", color.toLowerCase() === item.color ? "border-[#1b4f9c] ring-2 ring-[#1b4f9c]" : "border-[#d0d7de]")}
+            style={{ background: item.color }}
+            onClick={() => onColor(item.color)}
+          />
+        </Tip>
       ))}
     </div>
   );
@@ -1793,8 +1931,8 @@ function EdgePorts({ box, armed, onConnect }: { box: Box; armed: boolean; onConn
       {(Object.keys(sides) as (keyof typeof sides)[]).map((side) => {
         const { strip, dot } = sides[side];
         return (
+          <Tip key={side} label="Draw a line">
           <div
-            key={side}
             aria-label={`Connect ${side}`}
             className="absolute z-30 cursor-crosshair"
             style={strip}
@@ -1810,6 +1948,7 @@ function EdgePorts({ box, armed, onConnect }: { box: Box; armed: boolean; onConn
               <span className={cn("absolute -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-[#1b4f9c] bg-white", armed ? "size-3.5" : "size-2.5")} style={{ left: dot.left - strip.left, top: dot.top - strip.top }} />
             ) : null}
           </div>
+          </Tip>
         );
       })}
     </>
@@ -1864,21 +2003,23 @@ function BasicShape({
 }
 
 function RailButton({ label, title, active, onClick, children }: { label: string; title?: string; active: boolean; onClick: () => void; children: ReactNode }) {
+  const name = title ?? label;
   return (
-    <button
-      type="button"
-      title={title ?? label}
-      aria-label={title ?? label}
-      aria-pressed={active}
-      className={cn(
-        "flex w-full flex-col items-center gap-0.5 rounded-md py-1 text-[10px] leading-none [&_svg]:size-4",
-        active ? "bg-[#e8f0fe] text-[#1b4f9c]" : "text-[#202124] hover:bg-[#e8eaed]",
-      )}
-      onClick={onClick}
-    >
-      {children}
-      <span>{label}</span>
-    </button>
+    <Tip label={name}>
+      <button
+        type="button"
+        aria-label={name}
+        aria-pressed={active}
+        className={cn(
+          "flex w-full flex-col items-center gap-0.5 rounded-md py-1 text-[10px] leading-none [&_svg]:size-4",
+          active ? "bg-[#e8f0fe] text-[#1b4f9c]" : "text-[#202124] hover:bg-[#e8eaed]",
+        )}
+        onClick={onClick}
+      >
+        {children}
+        <span>{label}</span>
+      </button>
+    </Tip>
   );
 }
 
@@ -1891,6 +2032,41 @@ function ArrowGlyph({ mode, color }: { mode: ArrowEnds; color: string }) {
       {mode === "start" || mode === "both" ? <path d={head(2, false)} fill="none" stroke={color} strokeWidth="1.6" /> : null}
     </svg>
   );
+}
+
+function iconsOnLines(doc: MifaDocument, edges: SheetEdge[], nodeBox: (id: string) => SheetNode | null, lanes: Map<string, number>) {
+  const icons: { id: string; edgeId: string; art: SymbolArt; x: number; y: number; width: number; height: number }[] = [];
+  for (const edge of edges) {
+    const parts = edge.label
+      .split(" · ")
+      .map((part) => part.trim())
+      .filter((part) => transportArtwork(part));
+    if (!parts.length) continue;
+    const from = nodeBox(edge.from);
+    const to = nodeBox(edge.to);
+    if (!from || !to) continue;
+    const route = edgeRoute(from, to, doc.bends?.[edge.id], lanes.get(edge.id) ?? 0);
+    const start = route.points[0];
+    const end = route.points[route.points.length - 1];
+    const horizontal = Math.abs(end.x - start.x) >= Math.abs(end.y - start.y);
+    const sized = parts.map((part) => {
+      const art = transportArtwork(part)!;
+      const key = `${edge.id}::${part}`;
+      const saved = doc.icons?.[key];
+      const natural = artBox(art);
+      return { art, key, saved, width: saved?.width ?? natural.width, height: saved?.height ?? natural.height };
+    });
+    const gap = 8;
+    const total = sized.reduce((sum, item) => sum + (horizontal ? item.width : item.height), 0) + gap * Math.max(0, sized.length - 1);
+    let cursor = horizontal ? route.label.x - total / 2 : route.label.y - total / 2;
+    for (const item of sized) {
+      const x = item.saved ? item.saved.x : horizontal ? cursor : route.label.x - item.width - 12;
+      const y = item.saved ? item.saved.y : horizontal ? route.label.y - item.height - 12 : cursor;
+      cursor += (horizontal ? item.width : item.height) + gap;
+      icons.push({ id: `icon:${item.key}`, edgeId: edge.id, art: item.art, x, y, width: item.width, height: item.height });
+    }
+  }
+  return icons;
 }
 
 function laneMap(edges: SheetEdge[]) {

@@ -1,5 +1,6 @@
 import type { SymbolId } from "./document";
 import { LINE_CAR } from "./line-car";
+import type { SymbolArt } from "./symbol-art";
 
 const ink = "#202124";
 const BODY_COLORS = ["#d80000", "#d80000", "#d80000", "#3ff200", "#3ff200", "#3ff200", "#009999", "#009999", "#009999", "#969696", "#969696", "#969696"];
@@ -50,6 +51,18 @@ export function SymbolShape({
           strokeDasharray={armed && !selected ? "4 3" : undefined}
         />
       ) : null}
+    </svg>
+  );
+}
+
+export function VectorArt({ art, width, height, selected = false }: { art: SymbolArt; width: number; height: number; selected?: boolean }) {
+  const outline = Math.max(art.width, art.height) * 0.02;
+  return (
+    <svg width={width} height={height} viewBox={`0 0 ${art.width} ${art.height}`} className="overflow-visible">
+      {art.paths.map((path, index) => (
+        <path key={index} d={path.d} fill={path.fill ?? "none"} stroke={path.stroke ?? "none"} strokeWidth={path.stroke ? path.width : undefined} strokeLinejoin="round" />
+      ))}
+      {selected ? <rect x={outline / 2} y={outline / 2} width={Math.max(0, art.width - outline)} height={Math.max(0, art.height - outline)} fill="none" stroke="#1b4f9c" strokeWidth={outline} /> : null}
     </svg>
   );
 }

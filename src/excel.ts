@@ -1,5 +1,6 @@
 import * as XLSX from "xlsx";
 import { FLOW_KINDS, SYMBOLS, blankFlow, emptyProject, type DrawnLink, type Flow, type FlowKind, type LineBend, type MifaDocument, type ProjectInfo, type Side, type SymbolId } from "./document";
+import { ART_BY_ID } from "./symbol-art";
 
 export const FLOW_COLUMNS: { key: keyof Flow; header: string; short: string }[] = [
   { key: "flowNumber", header: "Flow number", short: "#" },
@@ -194,6 +195,7 @@ export function workbookToDocument(book: XLSX.WorkBook): MifaDocument {
       const width = Number(row[5]);
       const height = Number(row[6]);
       const shape = asText(row[7]);
+      const artwork = asText(row[8]);
       if (id && name && symbolIds.has(symbol) && Number.isFinite(x) && Number.isFinite(y)) {
         marks.push({
           id,
@@ -204,6 +206,7 @@ export function workbookToDocument(book: XLSX.WorkBook): MifaDocument {
           width: Number.isFinite(width) && width > 0 ? width : undefined,
           height: Number.isFinite(height) && height > 0 ? height : undefined,
           shape: shape === "text" || shape === "rectangle" || shape === "ellipse" ? shape : undefined,
+          ...(artwork && ART_BY_ID[artwork] ? { artwork } : {}),
         });
       }
     }
@@ -262,7 +265,19 @@ export function workbookToDocument(book: XLSX.WorkBook): MifaDocument {
       if (layer === "front") stack.front.push(id);
     }
   }
-  return { project, flows, positions, glyphs, marks, sizes, bends, strokes, links, stack };
+  const icons: NonNullable<MifaDocument["icons"]> = {};
+  const iconSheet = book.Sheets.Icons ?? book.Sheets.icons;
+  if (iconSheet) {
+    for (const row of sheetRows(iconSheet).slice(1)) {
+      const id = asText(row[0]);
+      const x = Number(row[1]);
+      const y = Number(row[2]);
+      const width = Number(row[3]);
+      const height = Number(row[4]);
+      if (id && [x, y, width, height].every((value) => Number.isFinite(value)) && width > 0 && height > 0) icons[id] = { x, y, width, height };
+    }
+  }
+  return { project, flows, positions, glyphs, marks, sizes, bends, strokes, links, stack, icons };
 }
 
 export function documentToWorkbook(doc: MifaDocument) {
@@ -289,8 +304,8 @@ export function documentToWorkbook(doc: MifaDocument) {
   XLSX.utils.book_append_sheet(book, XLSX.utils.aoa_to_sheet(projectRows), "Project");
   XLSX.utils.book_append_sheet(book, XLSX.utils.aoa_to_sheet(flowRows), "Flows");
   const symbolRows = [
-    ["Id", "Name", "Symbol", "X", "Y", "W", "H", "Shape"],
-    ...(doc.marks ?? []).map((mark) => [mark.id, mark.name, mark.symbol, mark.x, mark.y, mark.width ?? "", mark.height ?? "", mark.shape ?? ""]),
+    ["Id", "Name", "Symbol", "X", "Y", "W", "H", "Shape", "Artwork"],
+    ...(doc.marks ?? []).map((mark) => [mark.id, mark.name, mark.symbol, mark.x, mark.y, mark.width ?? "", mark.height ?? "", mark.shape ?? "", mark.artwork ?? ""]),
   ];
   const routeRows = [
     ["Edge", "X", "Y", "Part", "Side"],
@@ -313,7 +328,9 @@ export function documentToWorkbook(doc: MifaDocument) {
   XLSX.utils.book_append_sheet(book, XLSX.utils.aoa_to_sheet(routeRows), "Routes");
   XLSX.utils.book_append_sheet(book, XLSX.utils.aoa_to_sheet(strokeRows), "Strokes");
   XLSX.utils.book_append_sheet(book, XLSX.utils.aoa_to_sheet(linkRows), "Links");
+  const iconRows = [["Key", "X", "Y", "W", "H"], ...Object.entries(doc.icons ?? {}).map(([id, box]) => [id, box.x, box.y, box.width, box.height])];
   XLSX.utils.book_append_sheet(book, XLSX.utils.aoa_to_sheet(stackRows), "Stack");
+  XLSX.utils.book_append_sheet(book, XLSX.utils.aoa_to_sheet(iconRows), "Icons");
   return book;
 }
 
