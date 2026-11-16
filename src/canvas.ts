@@ -27,6 +27,11 @@ function splitNode(id: string) {
   return { kind: id.slice(0, index), rest: id.slice(index + 1) };
 }
 
+function sequencerNumber(rest: string) {
+  const packed = packAndNumber(rest);
+  return packed.pack === "LV" || packed.pack === "SB" || packed.pack === "X" ? packed.number : rest;
+}
+
 function packAndNumber(rest: string) {
   const index = rest.indexOf(":");
   if (index === -1) return { pack: "", number: rest };
@@ -57,9 +62,9 @@ export function nodeMatches(flow: Flow, id: string) {
   if (kind === "supplier") return flow.supplier.trim() === rest;
   if (kind === "dock") return flow.dock.trim() === rest;
   if (kind === "buffer") return flow.unloadingBuffer && flow.bufferNumber.trim() === packed.number && pack === packed.pack;
-  if (kind === "warehouse") return flow.warehouse.trim() === packed.number && pack === packed.pack;
+  if (kind === "warehouse") return flow.warehouse.trim() === sequencerNumber(rest);
   if (kind === "kitting") return !flow.direct && flow.kitting && flow.kitNumber.trim() === packed.number && pack === packed.pack;
-  if (kind === "sequencing") return !flow.direct && flow.sequencing && flow.sequencingNumber.trim() === packed.number && pack === packed.pack;
+  if (kind === "sequencing") return !flow.direct && flow.sequencing && flow.sequencingNumber.trim() === sequencerNumber(rest);
   if (kind === "line") return flow.productionLine.trim() === rest;
   if (kind === "empties") return flow.emptiesStore.trim() === packed.number && pack === packed.pack;
   if (kind === "emptiesDock") return flow.emptiesDock.trim() === rest;
@@ -74,6 +79,8 @@ export function omitSymbols(doc: MifaDocument, ids: string[]): MifaDocument {
   const positions = { ...doc.positions };
   const glyphs = { ...(doc.glyphs ?? {}) };
   const sizes = doc.sizes ? { ...doc.sizes } : undefined;
+  const poses = doc.poses ? { ...doc.poses } : undefined;
+  const locks = doc.locks ? { ...doc.locks } : undefined;
   for (const id of gone) {
     if (id.startsWith("mark-")) continue;
     flows = flows.map((flow) => stripNode(flow, id));
@@ -81,6 +88,8 @@ export function omitSymbols(doc: MifaDocument, ids: string[]): MifaDocument {
       delete positions[id];
       delete glyphs[id];
       if (sizes) delete sizes[id];
+      if (poses) delete poses[id];
+      if (locks) delete locks[id];
     }
   }
   const marks = doc.marks?.filter((mark) => !gone.has(mark.id));
@@ -88,7 +97,7 @@ export function omitSymbols(doc: MifaDocument, ids: string[]): MifaDocument {
   const stack = doc.stack
     ? { back: doc.stack.back.filter((id) => !gone.has(id)), front: doc.stack.front.filter((id) => !gone.has(id)) }
     : undefined;
-  return { ...doc, flows, positions, glyphs, ...(sizes ? { sizes } : {}), ...(marks ? { marks } : {}), ...(links ? { links } : {}), ...(stack ? { stack } : {}) };
+  return { ...doc, flows, positions, glyphs, ...(sizes ? { sizes } : {}), ...(poses ? { poses } : {}), ...(locks && Object.keys(locks).length ? { locks } : { locks: undefined }), ...(marks ? { marks } : {}), ...(links ? { links } : {}), ...(stack ? { stack } : {}) };
 }
 
 export function stripNode(flow: Flow, id: string): Flow {
@@ -128,8 +137,7 @@ function absorb(flow: Flow, id: string): Flow {
     next.bufferNumber = packed.number;
     applyPack();
   } else if (kind === "warehouse") {
-    next.warehouse = packed.number;
-    applyPack();
+    next.warehouse = sequencerNumber(rest);
   } else if (kind === "kitting") {
     next.kitting = true;
     next.direct = false;
@@ -138,8 +146,7 @@ function absorb(flow: Flow, id: string): Flow {
   } else if (kind === "sequencing") {
     next.sequencing = true;
     next.direct = false;
-    next.sequencingNumber = packed.number;
-    applyPack();
+    next.sequencingNumber = sequencerNumber(rest);
   } else if (kind === "line") next.productionLine = rest;
   else if (kind === "empties") {
     next.emptiesStore = packed.number;
@@ -181,8 +188,7 @@ function assignStamp(flow: Flow, stamp: StampId, doc: MifaDocument) {
     if (!next.packaging) next.packaging = "SB";
     const pack = packOf(next);
     const numbers = new Set(
-      doc.flows
-        .filter((item) => packOf(item) === pack)
+      (stamp === "sequencing" || stamp === "warehouse" || stamp === "supermarket" ? doc.flows : doc.flows.filter((item) => packOf(item) === pack))
         .map((item) => {
           if (stamp === "buffer") return item.unloadingBuffer ? item.bufferNumber : "";
           if (stamp === "kitting") return item.kitting ? item.kitNumber : "";
@@ -221,9 +227,9 @@ function nodeIdFor(flow: Flow, stamp: StampId) {
   if (stamp === "supplier") return `supplier:${flow.supplier.trim()}`;
   if (stamp === "dock") return `dock:${flow.dock.trim()}`;
   if (stamp === "buffer") return `buffer:${pack}:${flow.bufferNumber.trim()}`;
-  if (stamp === "warehouse" || stamp === "supermarket") return `warehouse:${pack}:${flow.warehouse.trim()}`;
+  if (stamp === "warehouse" || stamp === "supermarket") return `warehouse:${flow.warehouse.trim()}`;
   if (stamp === "kitting") return `kitting:${pack}:${flow.kitNumber.trim()}`;
-  if (stamp === "sequencing") return `sequencing:${pack}:${flow.sequencingNumber.trim()}`;
+  if (stamp === "sequencing") return `sequencing:${flow.sequencingNumber.trim()}`;
   if (stamp === "production") return `line:${flow.productionLine.trim()}`;
   if (stamp === "empties") return `empties:${pack}:${flow.emptiesStore.trim()}`;
   if (stamp === "emptiesDock") return `emptiesDock:${flow.emptiesDock.trim()}`;

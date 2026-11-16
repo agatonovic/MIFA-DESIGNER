@@ -1,44 +1,75 @@
 import { ArchivePanel } from "./archive-panel";
 import { ARCHIVE_KEY, addFolder, addMifa, createArchive, openDocument, parseArchive, remember, removeFolder, removeMifa, renameFolder, restoreVersion, saveVersion, type Archive } from "./archive";
-import { SymbolShape, VectorArt } from "./symbol-shape";
+import { linePattern, ProductionLineArt, productionLineBox, SymbolShape, VectorArt } from "./symbol-shape";
 import { Button, Input, Tip } from "./ui";
 import { cn } from "./cn";
 import { STAMPS, connectSymbols, omitSymbols, placeSymbol, retargetNode, type StampId } from "./canvas";
 import {
   arrange,
   arrowOnScreen,
+  arrowSeat,
   arrowTowardScreen,
+  addLineCorner,
   bendFromCorner,
   bendFromMove,
+  dragLineCorner,
+  slideLineEnd,
+  removeLineCorner,
+  shiftLine,
+  bindFlowLine,
+  bindFlowSymbol,
+  bindTarget,
   blankFlow,
   buildSheet,
+  canonicalizeSequencers,
   centerPortsOnMove,
+  pinOpenRoutes,
+  lockToCenter,
+  unlockNodes,
   edgeRoute,
+  fieldForConnection,
+  fieldForNode,
+  seatLineIcon,
+  strokeAround,
   emptyDocument,
   exampleDocument,
   paintLayers,
   parseMifaDocument,
   createId,
-  pathForFlows,
+  boxForPercent,
+  clampFont,
+  fittedIconBox,
+  nextQuarter,
+  flowStory,
+  nestHosts,
+  previewPath,
+  quarterBox,
+  resizeSheet,
+  resizeBox,
+  scaledBox,
+  symbolPercent,
   snap,
-  straightenConnection,
-  SHEET_HEIGHT,
-  SHEET_WIDTH,
   SYMBOL_SIZE,
   type ArrowEnds,
   type Flow,
   type FlowKind,
+  type LineBend,
   type Mark,
   type MifaDocument,
   type ProjectInfo,
+  type QuarterTurn,
+  type Sheet,
+  type SheetBox,
   type SheetEdge,
   type SheetNode,
+  type TextAlign,
 } from "./document";
 import { downloadWorkbook, FLOW_COLUMNS, FLOW_GROUPS, readWorkbook } from "./excel";
-import { LIBRARY, type LibraryItem } from "./library";
-import { ART_BY_ID, SYMBOL_ART, artBox, transportArtwork, type SymbolArt } from "./symbol-art";
-import { BookOpen, Circle, Download, Eye, FilePlus, Folder, Minus, MousePointer2, PenLine, Plus, Redo2, Shapes, Square, Table2, Trash2, Type, Undo2, Upload, X } from "lucide-react";
+import type { LibraryItem } from "./library";
+import { ART_BY_ID, SYMBOL_ART, artBounds, artBox, transportArtwork, type SymbolArt } from "./symbol-art";
+import { Circle, Download, Eye, FlipHorizontal2, Folder, Link2, Lock, LockOpen, Minus, MousePointer2, PanelBottomClose, PanelBottomOpen, PenLine, Plus, Redo2, RotateCw, Shapes, Share2, Square, Trash2, Type, Undo2, Upload, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 
 const STORAGE_KEY = "mifa.canvas.v2";
 
@@ -80,6 +111,19 @@ function clampZoom(value: number) {
   return Math.min(2.5, Math.max(0.3, value));
 }
 
+function shareFromLocation(): { mode: "preview" | "edit"; doc: MifaDocument } | null {
+  const hash = window.location.hash;
+  if (!hash.startsWith("#mifa=")) return null;
+  try {
+    const parsed = JSON.parse(decodeURIComponent(hash.slice("#mifa=".length))) as { mode?: unknown; doc?: unknown };
+    const doc = parseMifaDocument(parsed.doc);
+    if (!doc) return null;
+    return { mode: parsed.mode === "edit" ? "edit" : "preview", doc };
+  } catch {
+    return null;
+  }
+}
+
 export function MifaDesigner() {
   const [ready, setReady] = useState(false);
   const [history, setHistory] = useState<History>({ past: [], present: exampleDocument(), future: [] });
@@ -93,24 +137,33 @@ export function MifaDesigner() {
   const [armed, setArmed] = useState<LibraryItem | null>(null);
   const [linkKind, setLinkKind] = useState<FlowKind>("material");
   const [linkFrom, setLinkFrom] = useState<string | null>(null);
-  const [menu, setMenu] = useState<{ x: number; y: number; at: { x: number; y: number }; id: string | null } | null>(null);
+  const [binding, setBinding] = useState<{ flowId: string; column: keyof Flow } | null>(null);
+  const [menu, setMenu] = useState<{ x: number; y: number; at: { x: number; y: number }; id: string | null; edgeId: string | null; corner: number | null } | null>(null);
   const [dropAt, setDropAt] = useState<{ x: number; y: number } | null>(null);
   const [selectedFlowId, setSelectedFlowId] = useState<string | null>(null);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  const [editingTextId, setEditingTextId] = useState<string | null>(null);
   const [group, setGroup] = useState<string[]>([]);
   const [marquee, setMarquee] = useState<{ x: number; y: number; width: number; height: number } | null>(null);
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
-  const [hoverFlowIds, setHoverFlowIds] = useState<string[] | null>(null);
+  const [canPaste, setCanPaste] = useState(false);
+  const [hover, setHover] = useState<{ id: string; label: string; flowIds: string[] } | null>(null);
   const [dataOpen, setDataOpen] = useState(true);
+  const [shareOpen, setShareOpen] = useState(false);
+  const [shareLock, setShareLock] = useState(false);
   const [libraryOpen, setLibraryOpen] = useState(false);
   const [view, setView] = useState<View>({ zoom: 1, pan: { x: 32, y: 16 } });
   const [notice, setNotice] = useState("");
   const viewportRef = useRef<HTMLDivElement>(null);
   const sheetRef = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  const shareRef = useRef<HTMLDivElement>(null);
+  const sharedRef = useRef(false);
   const viewRef = useRef(view);
   const spaceRef = useRef(false);
   const panDrag = useRef<{ x: number; y: number; panX: number; panY: number; fromSheet?: boolean; moved?: boolean } | null>(null);
+  const canvasRef = useRef<{ edge: string; x: number; y: number; origin: MifaDocument; moved: boolean } | null>(null);
+  const pageRef = useRef<SheetBox>({ x: 0, y: 0, width: 2800, height: 1800 });
   const resizeRef = useRef<{
     id: string;
     handle: string;
@@ -119,6 +172,9 @@ export function MifaDesigner() {
     box: { x: number; y: number; width: number; height: number };
     origin: MifaDocument;
     moved: boolean;
+    circle: boolean;
+    minWidth: number;
+    minHeight: number;
   } | null>(null);
   const dragRef = useRef<{
     id: string;
@@ -129,22 +185,25 @@ export function MifaDesigner() {
     width: number;
     height: number;
     starts?: Record<string, { x: number; y: number; width: number; height: number }>;
+    iconStarts?: Record<string, { x: number; y: number; width: number; height: number; flip?: boolean; turn?: QuarterTurn; placed?: boolean }>;
   } | null>(null);
   const marqueeRef = useRef<{ x: number; y: number; moved: boolean; box: { x: number; y: number; width: number; height: number } } | null>(null);
   const boxesRef = useRef<{ id: string; x: number; y: number; width: number; height: number }[]>([]);
   const bendRef = useRef<{ id: string; index: number; origin: MifaDocument; moved: boolean; x: number; y: number } | null>(null);
   const textOrigin = useRef<MifaDocument | null>(null);
+  const tableCellRef = useRef<HTMLTableCellElement | null>(null);
   viewRef.current = view;
   archiveRef.current = archive;
 
-  const doc = history.present;
+  const doc = useMemo(() => canonicalizeSequencers(history.present), [history.present]);
   const sheet = useMemo(() => buildSheet(doc), [doc]);
+  pageRef.current = sheet;
   const marks = doc.marks ?? [];
   const drawnEdges: SheetEdge[] = (doc.links ?? []).map((link) => ({ id: link.id, from: link.from, to: link.to, kind: link.kind, label: link.label, flowIds: [] }));
   const layers = paintLayers([...sheet.nodes.map((node) => node.id), ...marks.map((mark) => mark.id)], doc.stack);
   const visibleEdges = [...sheet.edges, ...drawnEdges];
   const lanes = laneMap(visibleEdges);
-  const lineIcons = iconsOnLines(doc, visibleEdges, nodeBox, lanes);
+  const lineIcons = iconsOnLines(doc, visibleEdges, nodeBox, lanes, sheet);
   boxesRef.current = [
     ...sheet.nodes.map((node) => ({ id: node.id, x: node.x, y: node.y, width: node.width, height: node.height })),
     ...marks.map((mark) => ({
@@ -157,10 +216,11 @@ export function MifaDesigner() {
     ...lineIcons.map((icon) => ({ id: icon.id, x: icon.x, y: icon.y, width: icon.width, height: icon.height })),
   ];
   const selectedEdge = visibleEdges.find((edge) => edge.id === selectedEdgeId) ?? null;
-  const sheetWidth = SHEET_WIDTH;
-  const sheetHeight = SHEET_HEIGHT;
-  const activeFlowIds = mode === "preview" ? hoverFlowIds : null;
-  const activePath = activeFlowIds?.length ? pathForFlows(sheet, activeFlowIds) : null;
+  const tableFocus = focusInTable(sheet, lineIcons, selectedNodeId, selectedEdgeId, selectedFlowId);
+  tableCellRef.current = null;
+  const sheetWidth = sheet.width;
+  const sheetHeight = sheet.height;
+  const activePath = mode === "preview" && hover ? previewPath(sheet, hover.id, drawnEdges) : null;
 
   useEffect(() => {
     let legacy: MifaDocument | null = null;
@@ -175,16 +235,26 @@ export function MifaDesigner() {
     } catch {
       /* start a library from the sheet that is already saved */
     }
+    const shared = shareFromLocation();
+    sharedRef.current = Boolean(shared);
     const next = stored ?? createArchive(legacy ?? exampleDocument());
     archiveRef.current = next;
     setArchive(next);
     setBrowseFolderId(next.openFolderId);
-    setHistory({ past: [], present: openDocument(next), future: [] });
+    setHistory({ past: [], present: shared?.doc ?? openDocument(next), future: [] });
+    if (shared) {
+      setMode(shared.mode === "edit" ? "design" : "preview");
+      setShareLock(shared.mode === "preview");
+    }
     setReady(true);
   }, []);
 
   useEffect(() => {
-    if (!ready) return;
+    tableCellRef.current?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }, [selectedNodeId, selectedEdgeId, selectedFlowId]);
+
+  useEffect(() => {
+    if (!ready || sharedRef.current) return;
     const next = remember(archiveRef.current, doc);
     archiveRef.current = next;
     setArchive(next);
@@ -193,7 +263,10 @@ export function MifaDesigner() {
   }, [doc, ready]);
 
   function commit(recipe: (current: MifaDocument) => MifaDocument) {
-    setHistory((current) => commitHistory(current, recipe(current.present)));
+    setHistory((current) => {
+      const base = canonicalizeSequencers(current.present);
+      return commitHistory(current, canonicalizeSequencers(recipe(base)));
+    });
   }
 
   function resetSelection() {
@@ -201,7 +274,8 @@ export function MifaDesigner() {
     setSelectedNodeId(null);
     setGroup([]);
     setLinkFrom(null);
-    setHoverFlowIds(null);
+    setBinding(null);
+    setHover(null);
     setSelectedEdgeId(null);
     setMenu(null);
     setDropAt(null);
@@ -209,16 +283,35 @@ export function MifaDesigner() {
     setMarquee(null);
   }
 
+  useEffect(() => {
+    if (!shareOpen) return;
+    function close(event: PointerEvent) {
+      if (shareRef.current?.contains(event.target as Node)) return;
+      setShareOpen(false);
+    }
+    window.addEventListener("pointerdown", close);
+    return () => window.removeEventListener("pointerdown", close);
+  }, [shareOpen]);
+
+  function leaveShare() {
+    if (!sharedRef.current && !shareLock) return;
+    sharedRef.current = false;
+    setShareLock(false);
+    if (window.location.hash.startsWith("#mifa=")) window.history.replaceState(null, "", window.location.pathname + window.location.search);
+  }
+
   function applyArchive(next: Archive, switchSheet: boolean) {
     archiveRef.current = next;
     setArchive(next);
     window.localStorage.setItem(ARCHIVE_KEY, JSON.stringify(next));
     if (!switchSheet) return;
+    leaveShare();
     setHistory({ past: [], present: openDocument(next), future: [] });
     resetSelection();
   }
 
   function replace(next: MifaDocument) {
+    leaveShare();
     setHistory((current) => commitHistory(current, next));
     resetSelection();
     setNotice("");
@@ -287,7 +380,8 @@ export function MifaDesigner() {
     });
   }
 
-  const actions = useRef({ undo, redo, removeSelection: () => {}, dismiss: () => {} });
+  const clipboard = useRef<{ items: Mark[]; pasteCount: number } | null>(null);
+  const actions = useRef({ undo, redo, removeSelection: () => {}, dismiss: () => {}, copy: (): boolean => false, paste: (): boolean => false });
   actions.current.undo = undo;
   actions.current.redo = redo;
   actions.current.removeSelection = () => {
@@ -311,27 +405,59 @@ export function MifaDesigner() {
     commit((current) => omitSymbols(current, ids));
     setSelectedNodeId(null);
     setGroup([]);
+    setEditingTextId(null);
     setSelectedFlowId(null);
   };
   actions.current.dismiss = () => {
-    const cancelTool = Boolean(linkFrom || armed || libraryOpen || tool !== "select");
+    const cancelTool = Boolean(linkFrom || binding || armed || libraryOpen || tool !== "select");
     setMenu(null);
     setDropAt(null);
     setLibraryOpen(false);
     setLinkFrom(null);
+    setBinding(null);
     setArmed(null);
     setTool("select");
     if (cancelTool) return;
     setSelectedNodeId(null);
     setSelectedEdgeId(null);
     setGroup([]);
+    setEditingTextId(null);
     setSelectedFlowId(null);
+  };
+  actions.current.copy = () => {
+    const ids = group.length ? group : selectedNodeId ? [selectedNodeId] : [];
+    const items = ids.map((id) => snapshotSymbol(doc, sheet.nodes, lineIcons, id)).filter((item): item is Mark => item !== null);
+    if (!items.length) return false;
+    clipboard.current = { items, pasteCount: 0 };
+    setCanPaste(true);
+    return true;
+  };
+  actions.current.paste = () => {
+    const clip = clipboard.current;
+    if (mode !== "design" || !clip?.items.length) return false;
+    clip.pasteCount += 1;
+    const step = 24 * clip.pasteCount;
+    const page = pageRef.current;
+    const copies = clip.items.map((item) => {
+      const width = item.width ?? SYMBOL_SIZE[item.symbol].width;
+      const height = item.height ?? SYMBOL_SIZE[item.symbol].height;
+      const placed = fitOnSheet(snap(item.x + step), snap(item.y + step), width, height, page);
+      return { ...item, id: createId("mark"), x: placed.x, y: placed.y };
+    });
+    commit((current) => ({ ...current, marks: [...(current.marks ?? []), ...copies] }));
+    setSelectedNodeId(copies[0]?.id ?? null);
+    setGroup(copies.map((item) => item.id));
+    setSelectedEdgeId(null);
+    setSelectedFlowId(null);
+    setEditingTextId(null);
+    setMenu(null);
+    return true;
   };
 
   useEffect(() => {
     function onKey(event: KeyboardEvent) {
       const target = event.target;
-      if (target instanceof HTMLElement && (target.tagName === "INPUT" || target.tagName === "SELECT" || target.tagName === "TEXTAREA")) return;
+      if (target instanceof HTMLElement && (target.tagName === "INPUT" || target.tagName === "SELECT" || target.tagName === "TEXTAREA" || target.isContentEditable)) return;
       if (event.code === "Space") {
         spaceRef.current = true;
         event.preventDefault();
@@ -341,6 +467,8 @@ export function MifaDesigner() {
         if (event.shiftKey) actions.current.redo();
         else actions.current.undo();
       }
+      if ((event.metaKey || event.ctrlKey) && !event.shiftKey && event.key.toLowerCase() === "c" && actions.current.copy()) event.preventDefault();
+      if ((event.metaKey || event.ctrlKey) && !event.shiftKey && event.key.toLowerCase() === "v" && actions.current.paste()) event.preventDefault();
       if (event.key === "Backspace" || event.key === "Delete") {
         event.preventDefault();
         actions.current.removeSelection();
@@ -382,23 +510,31 @@ export function MifaDesigner() {
       setView(next);
     }
     function onMove(event: PointerEvent) {
+      const extending = canvasRef.current;
+      if (extending) {
+        const zoom = viewRef.current.zoom || 1;
+        const dx = (event.clientX - extending.x) / zoom;
+        const dy = (event.clientY - extending.y) / zoom;
+        if (Math.hypot(dx, dy) > 2) extending.moved = true;
+        const next = resizeSheet(extending.origin, extending.edge, dx, dy);
+        setHistory((current) => ({ ...current, present: next }));
+        return;
+      }
       const resizing = resizeRef.current;
       if (resizing) {
         const zoom = viewRef.current.zoom || 1;
         const dx = (event.clientX - resizing.x) / zoom;
         const dy = (event.clientY - resizing.y) / zoom;
         if (Math.hypot(dx, dy) > 2) resizing.moved = true;
-        const box = fitBox(resizedBox(resizing.handle, resizing.box, dx, dy));
+        const box = fitBox(resizeBox(resizing.handle, resizing.box, dx, dy, { minWidth: resizing.minWidth, minHeight: resizing.minHeight, circle: resizing.circle }), pageRef.current);
         setHistory((current) => ({ ...current, present: applyBox(current.present, resizing.id, box) }));
         return;
       }
       const band = marqueeRef.current;
       if (band) {
-        const rect = sheetRef.current?.getBoundingClientRect();
-        const zoom = viewRef.current.zoom || 1;
-        if (!rect) return;
-        const x = (event.clientX - rect.left) / zoom;
-        const y = (event.clientY - rect.top) / zoom;
+        const point = sheetPoint(event);
+        const x = point.x;
+        const y = point.y;
         if (Math.hypot(x - band.x, y - band.y) > 16) band.moved = true;
         band.box = { x: Math.min(band.x, x), y: Math.min(band.y, y), width: Math.abs(x - band.x), height: Math.abs(y - band.y) };
         setMarquee(band.box);
@@ -406,19 +542,27 @@ export function MifaDesigner() {
       }
       const bending = bendRef.current;
       if (bending) {
-        const rect = sheetRef.current?.getBoundingClientRect();
-        const zoom = viewRef.current.zoom || 1;
-        if (!rect) return;
-        const x = (event.clientX - rect.left) / zoom;
-        const y = (event.clientY - rect.top) / zoom;
-        const x0 = (bending.x - rect.left) / zoom;
-        const y0 = (bending.y - rect.top) / zoom;
+        const point = sheetPoint(event);
+        const origin = sheetPoint({ clientX: bending.x, clientY: bending.y });
+        const x = point.x;
+        const y = point.y;
+        const x0 = origin.x;
+        const y0 = origin.y;
         if (Math.hypot(x - x0, y - y0) > 2) bending.moved = true;
         if (!bending.moved) return;
         const ends = endsOf(bending.origin, bending.id);
         if (!ends) return;
         const base = bending.origin.bends?.[bending.id];
-        const next = bending.index < 0 ? bendFromMove(ends.from, ends.to, base, x - x0, y - y0) : bendFromCorner(ends.from, ends.to, base, bending.index, { x: snap(x), y: snap(y) });
+        const shaped = Boolean(base?.shaped && (bending.index < 0 || edgeRoute(ends.from, ends.to, base).corners.length > 0));
+        const next = bending.index <= -2
+          ? slideLineEnd(ends.from, ends.to, base, bending.index === -2 ? "from" : "to", { x: snap(x), y: snap(y) })
+          : shaped
+            ? bending.index < 0
+              ? shiftLine(ends.from, ends.to, base!, x - x0, y - y0)
+              : dragLineCorner(ends.from, ends.to, base!, bending.index, { x, y })
+            : bending.index < 0
+              ? bendFromMove(ends.from, ends.to, base, x - x0, y - y0)
+              : bendFromCorner(ends.from, ends.to, base, bending.index, { x: snap(x), y: snap(y) });
         setHistory((current) => ({
           ...current,
           present: { ...current.present, bends: { ...current.present.bends, [bending.id]: next } },
@@ -434,6 +578,14 @@ export function MifaDesigner() {
       setView(next);
     }
     function onUp() {
+      const extending = canvasRef.current;
+      if (extending) {
+        canvasRef.current = null;
+        if (extending.moved) {
+          const origin = extending.origin;
+          setHistory((current) => (current.present === origin ? current : { past: [...current.past, origin].slice(-50), present: current.present, future: [] }));
+        }
+      }
       const resizing = resizeRef.current;
       if (resizing) {
         resizeRef.current = null;
@@ -515,10 +667,11 @@ export function MifaDesigner() {
   }
 
   function sheetPoint(event: { clientX: number; clientY: number }) {
-    const rect = sheetRef.current?.getBoundingClientRect();
+    const rect = viewportRef.current?.getBoundingClientRect();
     const zoom = viewRef.current.zoom || 1;
+    const pan = viewRef.current.pan;
     if (!rect) return { x: 0, y: 0 };
-    return { x: (event.clientX - rect.left) / zoom, y: (event.clientY - rect.top) / zoom };
+    return { x: (event.clientX - rect.left - pan.x) / zoom, y: (event.clientY - rect.top - pan.y) / zoom };
   }
 
   function chooseLibrary(item: LibraryItem) {
@@ -561,7 +714,7 @@ export function MifaDesigner() {
   function placeChosen(item: LibraryItem | null, point: { x: number; y: number }) {
     if (item?.link) return;
     if (item?.artwork && ART_BY_ID[item.artwork]) {
-      const size = artBox(ART_BY_ID[item.artwork]);
+      const size = chosenSize(item);
       const mark: Mark = { id: createId("mark"), name: item.name, symbol: "rectangle", artwork: item.artwork, x: snap(point.x), y: snap(point.y), width: size.width, height: size.height };
       commit((current) => ({ ...current, marks: [...(current.marks ?? []), mark] }));
       setSelectedNodeId(mark.id);
@@ -573,7 +726,7 @@ export function MifaDesigner() {
       return;
     }
     if (item && !item.stamp) {
-      const size = SYMBOL_SIZE[item.symbol];
+      const size = chosenSize(item);
       const mark = { id: createId("mark"), name: "", symbol: item.symbol, x: snap(point.x), y: snap(point.y), width: size.width, height: size.height };
       commit((current) => ({ ...current, marks: [...(current.marks ?? []), mark] }));
       setSelectedNodeId(mark.id);
@@ -609,7 +762,7 @@ export function MifaDesigner() {
     const from = nodeBox(edge.from);
     const to = nodeBox(edge.to);
     if (!from || !to) return "end" as const;
-    return arrowTowardScreen(edgeRoute(from, to, doc.bends?.[edge.id], lanes.get(edge.id) ?? 0).points);
+    return arrowTowardScreen(edgeRoute(from, to, doc.bends?.[edge.id], lanes.get(edge.id) ?? 0, sheet).points);
   }
 
   function lookOf(edge: SheetEdge) {
@@ -657,7 +810,43 @@ export function MifaDesigner() {
       const node = sheet.nodes.find((item) => item.id === id);
       setSelectedFlowId(node?.flowIds[0] ?? null);
     }
-    setMenu({ x: Math.min(event.clientX, window.innerWidth - 220), y: Math.min(event.clientY, window.innerHeight - 240), at: sheetPoint(event), id });
+    setMenu({ x: Math.min(event.clientX, window.innerWidth - 220), y: Math.min(event.clientY, window.innerHeight - 280), at: sheetPoint(event), id, edgeId: null, corner: null });
+  }
+
+  function openEdgeMenu(event: { preventDefault: () => void; stopPropagation: () => void; clientX: number; clientY: number }, edgeId: string, corner: number | null) {
+    event.preventDefault();
+    event.stopPropagation();
+    const edge = visibleEdges.find((item) => item.id === edgeId);
+    setSelectedEdgeId(edgeId);
+    setSelectedNodeId(null);
+    setGroup([]);
+    setLinkFrom(null);
+    setSelectedFlowId(edge?.flowIds[0] ?? null);
+    setMenu({ x: Math.min(event.clientX, window.innerWidth - 220), y: Math.min(event.clientY, window.innerHeight - 280), at: sheetPoint(event), id: null, edgeId, corner });
+  }
+
+  function lineCorners(edgeId: string) {
+    const edge = visibleEdges.find((item) => item.id === edgeId);
+    const from = edge && nodeBox(edge.from);
+    const to = edge && nodeBox(edge.to);
+    if (!from || !to) return [];
+    return edgeRoute(from, to, doc.bends?.[edgeId], 0, sheet).corners;
+  }
+
+  function editLine(edgeId: string, produce: (from: SheetNode, to: SheetNode, bend: LineBend | undefined) => LineBend | null) {
+    const edge = visibleEdges.find((item) => item.id === edgeId);
+    const from = edge && nodeBox(edge.from);
+    const to = edge && nodeBox(edge.to);
+    if (!from || !to) return;
+    commit((current) => {
+      const next = produce(from, to, current.bends?.[edgeId]);
+      const bends = { ...(current.bends ?? {}) };
+      if (!next) delete bends[edgeId];
+      else bends[edgeId] = next;
+      return { ...current, bends };
+    });
+    setMenu(null);
+    setSelectedEdgeId(edgeId);
   }
 
   function restack(id: string, where: "front" | "back") {
@@ -675,6 +864,7 @@ export function MifaDesigner() {
     setMenu(null);
     setSelectedNodeId(null);
     setGroup([]);
+    setEditingTextId(null);
     setSelectedFlowId(null);
   }
 
@@ -694,7 +884,7 @@ export function MifaDesigner() {
   }
 
   function placeBasic(shape: "text" | "rectangle" | "ellipse", point: { x: number; y: number }) {
-    const size = shape === "text" ? { width: 160, height: 40 } : shape === "ellipse" ? { width: 128, height: 80 } : { width: 128, height: 72 };
+    const size = shape === "text" ? { width: 160, height: 40 } : shape === "ellipse" ? { width: 96, height: 96 } : { width: 128, height: 72 };
     const mark: Mark = {
       id: createId("mark"),
       name: shape === "text" ? "Text" : shape === "rectangle" ? "" : "",
@@ -708,22 +898,71 @@ export function MifaDesigner() {
     commit((current) => ({ ...current, marks: [...(current.marks ?? []), mark] }));
     setSelectedNodeId(mark.id);
     setGroup([mark.id]);
+    setEditingTextId(shape === "text" ? mark.id : null);
     setSelectedFlowId(null);
     setSelectedEdgeId(null);
     setArmed(null);
-    setTool("select");
+    if (shape !== "text") setTool("select");
+  }
+
+  function nodeUnder(x: number, y: number) {
+    for (const element of document.elementsFromPoint(x, y)) {
+      const host = element.closest("[data-node]");
+      const id = host?.getAttribute("data-node");
+      if (!id) continue;
+      const node = sheet.nodes.find((item) => item.id === id);
+      if (node) return node;
+    }
+    return null;
+  }
+
+  function useBinding(target: SheetNode | SheetEdge) {
+    if (!binding) return false;
+    const column = FLOW_COLUMNS.find((item) => item.key === binding.column);
+    const next = "from" in target ? bindFlowLine(doc, binding.flowId, binding.column, target) : bindFlowSymbol(doc, binding.flowId, binding.column, target);
+    if (!next) {
+      const expect = bindTarget(binding.column);
+      const name = expect?.role === "line" ? `${expect.kind} line` : `${expect?.kind ?? "matching"} symbol`;
+      setNotice(`${column?.header ?? "This cell"} needs a ${name}.`);
+      return true;
+    }
+    commit(() => next);
+    setNotice(`${column?.header ?? "Cell"} uses ${target.label}.`);
+    setBinding(null);
+    setSelectedFlowId(binding.flowId);
+    setLinkFrom(null);
+    if ("from" in target) {
+      setSelectedEdgeId(target.id);
+      setSelectedNodeId(null);
+      setGroup([]);
+    } else {
+      setSelectedNodeId(target.id);
+      setGroup([target.id]);
+      setSelectedEdgeId(null);
+    }
+    return true;
   }
 
   function onEdgePointerDown(event: ReactPointerEvent<SVGPathElement | HTMLDivElement>, id: string, index = -1) {
-    if (mode !== "design" || tool !== "select" || spaceRef.current || event.button !== 0) return;
+    if (mode !== "design" || spaceRef.current || event.button !== 0) return;
     event.stopPropagation();
     event.preventDefault();
     const edge = visibleEdges.find((item) => item.id === id);
+    if (edge && binding && bindTarget(binding.column)?.role === "symbol") {
+      const attached = index === -2 ? edge.from : index === -3 ? edge.to : "";
+      const node = sheet.nodes.find((item) => item.id === attached) ?? nodeUnder(event.clientX, event.clientY);
+      if (node) {
+        useBinding(node);
+        return;
+      }
+    }
+    if (edge && useBinding(edge)) return;
+    if (tool !== "select") return;
     if (index >= 0 && event.detail >= 2) {
       bendRef.current = null;
       const from = edge && nodeBox(edge.from);
       const to = edge && nodeBox(edge.to);
-      if (from && to) commit((current) => straightenConnection(current, id, from, to));
+      if (from && to && edgeRoute(from, to, doc.bends?.[id]).corners.length > index) editLine(id, (start, end, bend) => removeLineCorner(start, end, bend, index));
       setSelectedEdgeId(id);
       setSelectedNodeId(null);
       setGroup([]);
@@ -740,6 +979,11 @@ export function MifaDesigner() {
     event.currentTarget.setPointerCapture(event.pointerId);
   }
 
+  function onSheetEdge(edge: string, event: ReactPointerEvent<HTMLDivElement>) {
+    canvasRef.current = { edge, x: event.clientX, y: event.clientY, origin: doc, moved: false };
+    event.currentTarget.setPointerCapture(event.pointerId);
+  }
+
   function onSheetPointerDown(event: ReactPointerEvent<HTMLDivElement>) {
     if (event.button === 2) return;
     setMenu(null);
@@ -747,6 +991,10 @@ export function MifaDesigner() {
     if ((event.target as HTMLElement).closest?.("svg")) return;
     setLibraryOpen(false);
     setDropAt(null);
+    if (binding) {
+      setBinding(null);
+      return;
+    }
     if (tool === "text" || tool === "rectangle" || tool === "ellipse") {
       placeBasic(tool, sheetPoint(event));
       return;
@@ -770,15 +1018,20 @@ export function MifaDesigner() {
     if (spaceRef.current || event.button === 1 || event.button === 2) return;
     event.stopPropagation();
     if (mode === "preview") {
-      setHoverFlowIds(node.flowIds);
+      setHover({ id: node.id, label: node.label, flowIds: node.flowIds });
       return;
     }
     setMenu(null);
+    if (useBinding(node)) return;
     if (linkFrom && linkFrom !== node.id) {
       finishLink(linkFrom, node.id);
       return;
     }
     setSelectedEdgeId(null);
+    if (tool === "text" || tool === "rectangle" || tool === "ellipse") {
+      placeBasic(tool, sheetPoint(event));
+      return;
+    }
     if (tool === "add") {
       const nextStamp = armed?.stamp ?? stamp;
       const flowId = selectedFlowId && node.flowIds.includes(selectedFlowId) ? selectedFlowId : node.flowIds[0];
@@ -816,12 +1069,41 @@ export function MifaDesigner() {
       setGroup([id]);
       setSelectedFlowId(sheet.nodes.find((node) => node.id === id)?.flowIds[0] ?? null);
     }
+    if (doc.locks?.[id]) return;
     const starts: Record<string, { x: number; y: number; width: number; height: number }> = {};
     for (const itemId of ids) {
+      if (doc.locks?.[itemId]) continue;
       const found = boxesRef.current.find((item) => item.id === itemId);
       if (found) starts[itemId] = found;
     }
-    dragRef.current = { id, offsetX: point.x - box.x, offsetY: point.y - box.y, origin: doc, moved: false, width: box.width, height: box.height, starts };
+    if (!starts[id]) return;
+    const moved = new Set(Object.keys(starts).filter((itemId) => !itemId.startsWith("mark-") && !itemId.startsWith("icon:")));
+    const iconStarts: NonNullable<NonNullable<typeof dragRef.current>["iconStarts"]> = {};
+    for (const edge of visibleEdges) {
+      if (!moved.has(edge.from) && !moved.has(edge.to)) continue;
+      const prefix = `${edge.id}::`;
+      for (const [key, saved] of Object.entries(doc.icons ?? {})) {
+        if (!key.startsWith(prefix) || saved.placed === false || starts[`icon:${key}`]) continue;
+        iconStarts[key] = saved;
+      }
+    }
+    for (const icon of lineIcons) {
+      const edge = visibleEdges.find((item) => item.id === icon.edgeId);
+      if (!edge || (!moved.has(edge.from) && !moved.has(edge.to))) continue;
+      const key = icon.id.slice(5);
+      if (iconStarts[key] || starts[icon.id]) continue;
+      const saved = doc.icons?.[key];
+      iconStarts[key] = {
+        x: icon.x,
+        y: icon.y,
+        width: icon.width,
+        height: icon.height,
+        ...(icon.flip ? { flip: true as const } : {}),
+        ...(icon.turn ? { turn: icon.turn } : {}),
+        ...(saved?.placed === true ? { placed: true as const } : {}),
+      };
+    }
+    dragRef.current = { id, offsetX: point.x - box.x, offsetY: point.y - box.y, origin: doc, moved: false, width: box.width, height: box.height, starts, iconStarts };
   }
 
   function onNodePointerMove(event: ReactPointerEvent<HTMLDivElement>) {
@@ -833,8 +1115,8 @@ export function MifaDesigner() {
     let dx = snap(point.x - drag.offsetX) - primary.x;
     let dy = snap(point.y - drag.offsetY) - primary.y;
     for (const box of Object.values(drag.starts)) {
-      dx = Math.min(SHEET_WIDTH - box.width - box.x, Math.max(-box.x, dx));
-      dy = Math.min(SHEET_HEIGHT - box.height - box.y, Math.max(-box.y, dy));
+      dx = Math.min(sheet.x + sheet.width - box.width - box.x, Math.max(sheet.x - box.x, dx));
+      dy = Math.min(sheet.y + sheet.height - box.height - box.y, Math.max(sheet.y - box.y, dy));
     }
     drag.moved = true;
     const starts = drag.starts;
@@ -853,11 +1135,20 @@ export function MifaDesigner() {
             ...Object.fromEntries(
               Object.entries(starts)
                 .filter(([itemId]) => itemId.startsWith("icon:"))
-                .map(([itemId, box]) => [itemId.slice(5), { x: box.x + dx, y: box.y + dy, width: box.width, height: box.height }]),
+                .map(([itemId, box]) => {
+                  const key = itemId.slice(5);
+                  const prev = drag.origin.icons?.[key];
+                  return [key, { x: box.x + dx, y: box.y + dy, width: box.width, height: box.height, ...(prev?.flip ? { flip: true } : {}), ...(prev?.turn ? { turn: prev.turn } : {}), placed: true as const }];
+                }),
+            ),
+            ...Object.fromEntries(
+              Object.entries(drag.iconStarts ?? {}).map(([key, box]) => [key, { ...box, x: box.x + dx, y: box.y + dy }]),
             ),
           },
         },
         Object.keys(starts).filter((id) => !id.startsWith("icon:")),
+        { x: dx, y: dy },
+        pinOpenRoutes(drag.origin, Object.keys(starts).filter((id) => !id.startsWith("icon:")), (id) => lanes.get(id) ?? 0),
       ),
     }));
   }
@@ -876,10 +1167,28 @@ export function MifaDesigner() {
     panDrag.current = { x: event.clientX, y: event.clientY, panX: viewRef.current.pan.x, panY: viewRef.current.pan.y };
   }
 
+  const nestHost = nestHosts(boxesRef.current.filter((box) => !box.id.startsWith("icon:")));
   function opacityFor(kind: "node" | "edge", id: string) {
     if (!activePath) return 1;
+    const host = kind === "node" ? nestHost.get(id) : undefined;
+    if (host) return activePath.nodes.has(host) || activePath.edges.has(host) ? 1 : 0.05;
     const onPath = kind === "node" ? activePath.nodes.has(id) : activePath.edges.has(id);
-    return onPath ? 1 : 0.16;
+    return onPath ? 1 : 0.05;
+  }
+
+  async function copyShare(permission: "preview" | "edit") {
+    const url = `${window.location.origin}${window.location.pathname}${window.location.search}#mifa=${encodeURIComponent(JSON.stringify({ mode: permission, doc }))}`;
+    setShareOpen(false);
+    if (url.length > 120000) {
+      setNotice("This sheet is too large to share as a link.");
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(url);
+      setNotice(permission === "preview" ? "Preview link copied." : "Edit link copied.");
+    } catch {
+      setNotice("Could not copy the link.");
+    }
   }
 
   async function onImport(file: File) {
@@ -916,10 +1225,14 @@ export function MifaDesigner() {
           role="button"
           tabIndex={0}
           aria-label={node.label}
+          data-node={node.id}
+          title={doc.locks?.[node.id] ? "Locked at the center of the flow" : undefined}
           className={cn(
             "pointer-events-auto absolute",
             mode === "design" && linkFrom && linkFrom !== node.id && "cursor-crosshair ring-2 ring-[#1b4f9c]",
-            mode === "design" && tool === "select" && !linkFrom && "cursor-grab active:cursor-grabbing",
+            mode === "design" && binding && "cursor-crosshair",
+            mode === "design" && (tool === "text" || tool === "rectangle" || tool === "ellipse") && "cursor-crosshair",
+            mode === "design" && tool === "select" && !linkFrom && !binding && !doc.locks?.[node.id] && "cursor-grab active:cursor-grabbing",
           )}
           style={{
             left: node.x,
@@ -933,14 +1246,15 @@ export function MifaDesigner() {
           onContextMenu={(event) => mode === "design" && openMenu(event, node.id)}
           onPointerMove={onNodePointerMove}
           onPointerUp={onNodePointerUp}
-          onPointerEnter={() => mode === "preview" && setHoverFlowIds(node.flowIds)}
-          onPointerLeave={() => mode === "preview" && setHoverFlowIds(null)}
+          onPointerEnter={() => mode === "preview" && setHover({ id: node.id, label: node.label, flowIds: node.flowIds })}
+          onPointerLeave={() => mode === "preview" && setHover(null)}
         >
           <SymbolShape
             symbol={node.symbol}
             width={node.width}
             height={node.height}
-            selected={selectedNodeId === node.id || (group.length > 1 && group.includes(node.id))}
+            pose={doc.poses?.[node.id]}
+            selected={selectedNodeId === node.id || group.includes(node.id)}
             armed={linkFrom === node.id && selectedNodeId !== node.id}
           />
         </div>
@@ -953,24 +1267,40 @@ export function MifaDesigner() {
         key={mark.id}
         role="button"
         tabIndex={0}
-        aria-label={mark.name || (mark.shape === "ellipse" ? "Ellipse" : mark.shape === "text" ? "Text" : mark.shape === "rectangle" ? "Rectangle" : "Symbol")}
+        aria-label={mark.name || (mark.shape === "ellipse" ? "Circle" : mark.shape === "text" ? "Text" : mark.shape === "rectangle" ? "Rectangle" : "Symbol")}
         className={cn(
-          "pointer-events-auto absolute",
+          mode === "preview" ? "pointer-events-none absolute" : "pointer-events-auto absolute",
           mode === "design" && linkFrom && linkFrom !== mark.id && "cursor-crosshair ring-2 ring-[#1b4f9c]",
+          mode === "design" && (tool === "text" || tool === "rectangle" || tool === "ellipse") && "cursor-crosshair",
           mode === "design" && tool === "select" && !linkFrom && "cursor-grab active:cursor-grabbing",
         )}
-        style={{ left: mark.x, top: mark.y, width: mark.width ?? SYMBOL_SIZE[mark.symbol].width, height: mark.height ?? SYMBOL_SIZE[mark.symbol].height }}
+        style={{
+          left: mark.x,
+          top: mark.y,
+          width: mark.width ?? SYMBOL_SIZE[mark.symbol].width,
+          height: mark.height ?? SYMBOL_SIZE[mark.symbol].height,
+          opacity: opacityFor("node", mark.id),
+          transition: "opacity 140ms ease",
+        }}
         onContextMenu={(event) => mode === "design" && openMenu(event, mark.id)}
         onPointerDown={(event) => {
           if (spaceRef.current || event.button === 1 || event.button === 2) return;
           event.stopPropagation();
           if (mode !== "design") return;
           setMenu(null);
+          if (binding) {
+            setNotice("Click a symbol that belongs to the flow.");
+            return;
+          }
           if (linkFrom && linkFrom !== mark.id) {
             finishLink(linkFrom, mark.id);
             return;
           }
           setSelectedEdgeId(null);
+          if (tool === "text" || tool === "rectangle" || tool === "ellipse") {
+            placeBasic(tool, sheetPoint(event));
+            return;
+          }
           if (tool !== "select") {
             setTool("select");
             setArmed(null);
@@ -980,18 +1310,43 @@ export function MifaDesigner() {
           beginMove(mark.id, sheetPoint(event), { x: mark.x, y: mark.y, width, height });
           event.currentTarget.setPointerCapture(event.pointerId);
         }}
+        onDoubleClick={(event) => {
+          if (mark.shape !== "text" || mode !== "design") return;
+          event.stopPropagation();
+          setSelectedNodeId(mark.id);
+          setGroup([mark.id]);
+          setEditingTextId(mark.id);
+        }}
         onPointerMove={onNodePointerMove}
         onPointerUp={onNodePointerUp}
       >
-        {mark.artwork && ART_BY_ID[mark.artwork] ? (
-          <VectorArt art={ART_BY_ID[mark.artwork]} width={mark.width ?? 128} height={mark.height ?? 72} selected={selectedNodeId === mark.id} />
+        {mark.artwork && linePattern(mark.artwork) ? (
+          <Posed width={mark.width ?? 48} height={mark.height ?? 280} pose={mark}>
+            <ProductionLineArt
+              width={innerSize(mark.width ?? 48, mark.height ?? 280, mark.turn).width}
+              height={innerSize(mark.width ?? 48, mark.height ?? 280, mark.turn).height}
+              pattern={linePattern(mark.artwork) ?? "sequence"}
+              frame={selectedNodeId === mark.id || group.includes(mark.id)}
+            />
+          </Posed>
+        ) : mark.artwork && ART_BY_ID[mark.artwork] ? (
+          <Posed width={mark.width ?? 128} height={mark.height ?? 72} pose={mark}>
+            <VectorArt art={ART_BY_ID[mark.artwork]} width={innerSize(mark.width ?? 128, mark.height ?? 72, mark.turn).width} height={innerSize(mark.width ?? 128, mark.height ?? 72, mark.turn).height} selected={selectedNodeId === mark.id || group.includes(mark.id)} />
+          </Posed>
         ) : mark.shape ? (
           <BasicShape
             shape={mark.shape}
             width={mark.width ?? 128}
             height={mark.height ?? 72}
             name={mark.name}
-            editing={selectedNodeId === mark.id && mark.shape === "text"}
+            color={mark.color}
+            align={mark.align}
+            bold={mark.bold}
+            font={mark.font}
+            fill={mark.fill}
+            border={mark.border}
+            weight={mark.weight}
+            editing={editingTextId === mark.id}
             onChange={(value) => {
               setHistory((current) => ({
                 ...current,
@@ -1005,6 +1360,7 @@ export function MifaDesigner() {
               textOrigin.current = doc;
             }}
             onBlur={() => {
+              setEditingTextId((current) => (current === mark.id ? null : current));
               const origin = textOrigin.current;
               textOrigin.current = null;
               if (!origin || origin.marks?.find((item) => item.id === mark.id)?.name === mark.name) return;
@@ -1016,11 +1372,117 @@ export function MifaDesigner() {
             symbol={mark.symbol}
             width={mark.width ?? SYMBOL_SIZE[mark.symbol].width}
             height={mark.height ?? SYMBOL_SIZE[mark.symbol].height}
-            armed={selectedNodeId === mark.id}
+            pose={mark}
+            armed={selectedNodeId === mark.id || group.includes(mark.id)}
           />
         )}
       </div>
     );
+  }
+
+  const chosen = group.length ? group : selectedNodeId ? [selectedNodeId] : [];
+  const picked = chosen.map((id) => describeObject(doc, sheet.nodes, marks, lineIcons, id));
+  const kind = picked.length > 0 && picked.every((item) => item && item.kind === picked[0]?.kind) ? picked[0]!.kind : null;
+  const textItems = kind === "text" ? picked.filter((item): item is ObjectPick => item !== null) : [];
+  const shapeItems = kind === "shape" ? picked.filter((item): item is ObjectPick => item !== null) : [];
+  const symbolItems = kind === "symbol" ? picked.filter((item): item is ObjectPick => item !== null) : [];
+  const flowSymbols = symbolItems.length > 0 && symbolItems.every((item) => !item.id.startsWith("mark-") && !item.id.startsWith("icon:"));
+
+  function resizePicked(items: ObjectPick[], factor: number) {
+    commit((current) => items.reduce((next, item) => applyBox(next, item.id, scaledBox(item.box, factor, sheet)), current));
+  }
+
+  function setTextSize(items: ObjectPick[], font: number) {
+    writeTextFont(items, () => font);
+  }
+
+  function stepTextSize(items: ObjectPick[], factor: number) {
+    writeTextFont(items, (item) => (item.font ?? 14) * factor);
+  }
+
+  function writeTextFont(items: ObjectPick[], fontFor: (item: ObjectPick) => number) {
+    const nextFont = new Map(items.map((item) => [item.id, clampFont(fontFor(item))]));
+    commit((current) => ({
+      ...current,
+      marks: (current.marks ?? []).map((mark) => {
+        const font = nextFont.get(mark.id);
+        if (font == null) return mark;
+        const next = { ...mark };
+        if (font === 14) delete next.font;
+        else next.font = font;
+        return next;
+      }),
+    }));
+  }
+
+  function setSymbolSize(items: ObjectPick[], percent: number) {
+    commit((current) => items.reduce((next, item) => applyBox(next, item.id, boxForPercent(item.box, item.natural.width, item.pose.turn, percent, sheet)), current));
+  }
+
+  function flipPicked(items: ObjectPick[]) {
+    const on = items.every((item) => item.pose.flip);
+    commit((current) =>
+      items.reduce((next, item) => {
+        const seeded = item.id.startsWith("icon:") && !next.icons?.[item.id.slice(5)] ? applyBox(next, item.id, item.box) : next;
+        return writePose(seeded, item.id, { flip: !on, turn: item.pose.turn });
+      }, current),
+    );
+  }
+
+  function holdSymbols(items: ObjectPick[]) {
+    const ids = items.map((item) => item.id).filter((id) => !id.startsWith("mark-") && !id.startsWith("icon:"));
+    if (!ids.length) return;
+    const edges = visibleEdges.map((edge) => ({ id: edge.id, from: edge.from, to: edge.to }));
+    if (ids.every((id) => doc.locks?.[id])) {
+      const at: Record<string, { x: number; y: number }> = {};
+      for (const id of ids) {
+        const node = sheet.nodes.find((item) => item.id === id);
+        if (node) at[id] = { x: node.x, y: node.y };
+      }
+      commit((current) => unlockNodes(current, ids, at));
+      return;
+    }
+    commit((current) => lockToCenter(current, ids, edges));
+  }
+
+  function rotatePicked(items: ObjectPick[]) {
+    commit((current) =>
+      items.reduce((next, item) => {
+        const from = item.pose.turn ?? 0;
+        const to = nextQuarter(from);
+        return writePose(applyBox(next, item.id, quarterBox(item.box, from, to, sheet)), item.id, { flip: item.pose.flip, turn: to });
+      }, current),
+    );
+  }
+
+  function paintShape(patch: { fill?: string; border?: string; weight?: number }) {
+    const ids = new Set(shapeItems.map((item) => item.id));
+    commit((current) => ({
+      ...current,
+      marks: (current.marks ?? []).map((mark) => {
+        if (!ids.has(mark.id)) return mark;
+        const next = { ...mark, ...patch };
+        if (!next.fill || next.fill.toLowerCase() === "#ffffff") delete next.fill;
+        if (!next.border || next.border.toLowerCase() === "#202124") delete next.border;
+        if (next.weight === undefined || next.weight === 1) delete next.weight;
+        return next;
+      }),
+    }));
+  }
+
+  function paintText(patch: { color?: string; align?: TextAlign; bold?: boolean }) {
+    const ids = new Set(textItems.map((item) => item.id));
+    commit((current) => ({
+      ...current,
+      marks: (current.marks ?? []).map((mark) => {
+        if (!ids.has(mark.id)) return mark;
+        const next = { ...mark, ...patch };
+        if (!next.color || next.color.toLowerCase() === "#202124") delete next.color;
+        if (!next.align || next.align === "center") delete next.align;
+        if (!next.bold) delete next.bold;
+        return next;
+      }),
+    }));
   }
 
   return (
@@ -1044,43 +1506,17 @@ export function MifaDesigner() {
           <Redo2 />
         </Button>
         <div className="ml-auto flex items-center gap-1">
-          <input
-            ref={fileRef}
-            type="file"
-            accept=".xlsx,.xls"
-            className="hidden"
-            onChange={(event) => {
-              const file = event.target.files?.[0];
-              event.target.value = "";
-              if (file) void onImport(file);
-            }}
-          />
-          <Button variant="outline" size="icon-sm" className="size-8" title="Import Excel" aria-label="Import Excel" onClick={() => fileRef.current?.click()}>
-            <Upload />
-          </Button>
-          <Button variant="outline" size="icon-sm" className="size-8" title="Export Excel" aria-label="Export Excel" onClick={() => downloadWorkbook(doc)}>
-            <Download />
-          </Button>
-          <Button
-            variant={dataOpen ? "secondary" : "outline"}
-            size="icon-sm"
-            className="size-8"
-            title={dataOpen ? "Hide data" : "Show data"}
-            aria-label={dataOpen ? "Hide data" : "Show data"}
-            aria-pressed={dataOpen}
-            onClick={() => setDataOpen((open) => !open)}
-          >
-            <Table2 />
-          </Button>
           <div className="ml-1 flex items-center gap-0.5 rounded-lg bg-[#e8eaed] p-0.5">
-            <Tip label="Edit">
+            <Tip label={shareLock ? "This link is for looking only" : "Edit"}>
               <button
                 type="button"
                 aria-label="Edit"
-                className={cn("flex size-7 items-center justify-center rounded-md", mode === "design" ? "bg-white shadow-sm" : "text-[#5f6368]")}
+                disabled={shareLock}
+                className={cn("flex size-7 items-center justify-center rounded-md", mode === "design" ? "bg-white shadow-sm" : "text-[#5f6368]", shareLock && "cursor-default opacity-40")}
                 onClick={() => {
+                  if (shareLock) return;
                   setMode("design");
-                  setHoverFlowIds(null);
+                  setHover(null);
                 }}
               >
                 <PenLine className="size-4" />
@@ -1096,6 +1532,31 @@ export function MifaDesigner() {
                 <Eye className="size-4" />
               </button>
             </Tip>
+          </div>
+          <div className="relative" ref={shareRef}>
+            <button
+              type="button"
+              aria-label="Share"
+              aria-expanded={shareOpen}
+              title="Share this sheet"
+              className={cn("flex h-8 items-center gap-1.5 rounded-md bg-[#1b4f9c] px-3 text-[13px] font-medium text-white", shareOpen && "bg-[#174ea6]")}
+              onClick={() => setShareOpen((open) => !open)}
+            >
+              <Share2 className="size-3.5" />
+              Share
+            </button>
+            {shareOpen ? (
+              <div className="absolute top-full right-0 z-50 mt-1 w-64 rounded-lg border border-[#d0d7de] bg-white p-1 shadow-lg">
+                <button type="button" className="block w-full rounded-md px-2 py-1.5 text-left hover:bg-[#e8eaed]" onClick={() => void copyShare("preview")}>
+                  <span className="block text-sm font-medium">Preview only</span>
+                  <span className="block text-[12px] text-[#5f6368]">The link opens the sheet to look at.</span>
+                </button>
+                <button type="button" className="block w-full rounded-md px-2 py-1.5 text-left hover:bg-[#e8eaed]" onClick={() => void copyShare("edit")}>
+                  <span className="block text-sm font-medium">Can edit</span>
+                  <span className="block text-[12px] text-[#5f6368]">The link opens the sheet ready to change.</span>
+                </button>
+              </div>
+            ) : null}
           </div>
         </div>
       </header>
@@ -1160,6 +1621,14 @@ export function MifaDesigner() {
               }
               chooseLibrary(item);
             }}
+            onDrop={(item, client) => {
+              const viewport = viewportRef.current;
+              const hit = document.elementFromPoint(client.clientX, client.clientY);
+              if (!viewport || !hit || !viewport.contains(hit)) return;
+              const point = sheetPoint(client);
+              const size = chosenSize(item);
+              placeChosen(item, { x: point.x - size.width / 2, y: point.y - size.height / 2 });
+            }}
           />
         </div>
       ) : null}
@@ -1170,7 +1639,7 @@ export function MifaDesigner() {
         style={{ touchAction: "none", cursor: spaceRef.current ? "grab" : undefined }}
         onPointerDown={onViewportPointerDown}
       >
-        <div style={{ transform: `translate(${view.pan.x}px, ${view.pan.y}px) scale(${view.zoom})`, transformOrigin: "0 0" }}>
+        <div style={{ transform: `translate(${view.pan.x + sheet.x * view.zoom}px, ${view.pan.y + sheet.y * view.zoom}px)`, transformOrigin: "0 0" }}>
           <div
             ref={sheetRef}
             className={cn(
@@ -1178,6 +1647,7 @@ export function MifaDesigner() {
               mode === "design" && (tool === "add" || tool === "text" || tool === "rectangle" || tool === "ellipse") && "cursor-crosshair",
             )}
             style={{
+              zoom: view.zoom,
               width: sheetWidth,
               height: sheetHeight,
               backgroundImage: "radial-gradient(#d5dbe3 1px, transparent 1px)",
@@ -1187,6 +1657,7 @@ export function MifaDesigner() {
             onContextMenu={(event) => mode === "design" && openMenu(event, null)}
           >
             <TitleBlock project={project} />
+            <div className="absolute inset-0" style={{ transform: `translate(${-sheet.x}px, ${-sheet.y}px)` }}>
             <div className="pointer-events-none absolute inset-0">
               {layers.back.map((id) => renderPiece(id))}
             </div>
@@ -1207,16 +1678,20 @@ export function MifaDesigner() {
                 const from = nodeBox(edge.from);
                 const to = nodeBox(edge.to);
                 if (!from || !to) return null;
-                const route = edgeRoute(from, to, doc.bends?.[edge.id], lanes.get(edge.id) ?? 0);
+                const route = edgeRoute(from, to, doc.bends?.[edge.id], lanes.get(edge.id) ?? 0, sheet);
                 const style = lookOf(edge);
                 const selected = selectedEdgeId === edge.id;
                 const marker = markerId(style.stroke);
+                const drawn = strokeAround(
+                  route.points,
+                  lineIcons.filter((icon) => icon.edgeId === edge.id),
+                );
                 return (
                   <g
                     key={edge.id}
                     style={{ opacity: opacityFor("edge", edge.id), transition: "opacity 140ms ease", pointerEvents: "auto" }}
-                    onPointerEnter={() => mode === "preview" && setHoverFlowIds(edge.flowIds)}
-                    onPointerLeave={() => mode === "preview" && setHoverFlowIds(null)}
+                    onPointerEnter={() => mode === "preview" && setHover({ id: edge.id, label: edge.label || "Line", flowIds: edge.flowIds })}
+                    onPointerLeave={() => mode === "preview" && setHover(null)}
                   >
                     <path
                       d={route.path}
@@ -1227,14 +1702,18 @@ export function MifaDesigner() {
                       strokeWidth={16}
                       style={{ pointerEvents: "stroke", cursor: mode === "design" && tool === "select" ? "grab" : undefined }}
                       onPointerDown={(event) => onEdgePointerDown(event, edge.id)}
-                    />
-                    {selected ? <path d={route.path} fill="none" stroke="#1b4f9c" strokeWidth={6} opacity={0.2} /> : null}
+                      onContextMenu={(event) => mode === "design" && openEdgeMenu(event, edge.id, null)}
+                    >
+                      {mode === "design" ? <title>Right-click to add or remove a corner</title> : null}
+                    </path>
+                    {selected ? <path d={drawn || route.path} fill="none" stroke="#1b4f9c" strokeWidth={6} opacity={0.2} style={{ pointerEvents: "none" }} /> : null}
                     <path
-                      d={route.path}
+                      d={drawn || route.path}
                       fill="none"
                       stroke={style.stroke}
-                      strokeWidth={1.7}
+                      strokeWidth={activePath?.edges.has(edge.id) ? 2.4 / Math.max(view.zoom, 0.05) : 1.7}
                       strokeDasharray={style.dash || undefined}
+                      style={{ pointerEvents: "none" }}
                       markerEnd={style.arrow === "end" || style.arrow === "both" ? `url(#arrow-end-${marker})` : undefined}
                       markerStart={style.arrow === "start" || style.arrow === "both" ? `url(#arrow-start-${marker})` : undefined}
                     />
@@ -1250,7 +1729,8 @@ export function MifaDesigner() {
                 box={boxFor(sheet.nodes, marks, selectedNodeId, lineIcons)}
                 handles={
                   sheet.nodes.find((node) => node.id === selectedNodeId)?.symbol === "production" ||
-                  marks.find((mark) => mark.id === selectedNodeId)?.symbol === "production"
+                  marks.find((mark) => mark.id === selectedNodeId)?.symbol === "production" ||
+                  linePattern(marks.find((mark) => mark.id === selectedNodeId)?.artwork)
                     ? ["n", "s"]
                     : undefined
                 }
@@ -1259,7 +1739,20 @@ export function MifaDesigner() {
                   if (!box) return;
                   event.stopPropagation();
                   event.preventDefault();
-                  resizeRef.current = { id: selectedNodeId, handle, x: event.clientX, y: event.clientY, box, origin: doc, moved: false };
+                  const shaped = marks.find((mark) => mark.id === selectedNodeId);
+                  const basic = shaped?.shape === "rectangle" || shaped?.shape === "ellipse";
+                  resizeRef.current = {
+                    id: selectedNodeId,
+                    handle,
+                    x: event.clientX,
+                    y: event.clientY,
+                    box,
+                    origin: doc,
+                    moved: false,
+                    circle: shaped?.shape === "ellipse",
+                    minWidth: basic ? 16 : 40,
+                    minHeight: basic ? 16 : 40,
+                  };
                   event.currentTarget.setPointerCapture(event.pointerId);
                 }}
               />
@@ -1287,24 +1780,50 @@ export function MifaDesigner() {
             {marquee && (marquee.width > 0 || marquee.height > 0) ? (
               <div className="pointer-events-none absolute z-30 border border-[#1b4f9c] bg-[#1b4f9c]/10" style={{ left: marquee.x, top: marquee.y, width: marquee.width, height: marquee.height }} />
             ) : null}
-            {mode === "design" && tool === "select" && selectedEdgeId
+            {mode === "design" && tool === "select"
               ? visibleEdges.flatMap((edge) => {
-                  if (edge.id !== selectedEdgeId) return [];
                   const from = nodeBox(edge.from);
                   const to = nodeBox(edge.to);
                   if (!from || !to) return [];
-                  const route = edgeRoute(from, to, doc.bends?.[edge.id], lanes.get(edge.id) ?? 0);
-                  const corners = route.corners.length ? route.corners : [route.handle];
-                  return corners.map((corner, index) => (
-                    <div
-                      key={`${edge.id}-corner-${index}`}
-                      aria-label="Move corner"
-                      title="Double-click to remove this point"
-                      className="absolute z-20 size-3 -translate-x-1/2 -translate-y-1/2 cursor-grab rounded-full border border-[#1b4f9c] bg-white active:cursor-grabbing"
-                      style={{ left: corner.x, top: corner.y }}
-                      onPointerDown={(event) => onEdgePointerDown(event, edge.id, index)}
-                    />
-                  ));
+                  const route = edgeRoute(from, to, doc.bends?.[edge.id], lanes.get(edge.id) ?? 0, sheet);
+                  const selected = edge.id === selectedEdgeId;
+                  const arrow = lookOf(edge).arrow;
+                  const start = route.points[0];
+                  const end = route.points[route.points.length - 1];
+                  const heads: { key: string; at: { x: number; y: number }; index: number; label: string }[] = [];
+                  if (arrow === "start" || arrow === "both") heads.push({ key: "start", at: arrowSeat(start, route.points[1] ?? end), index: -2, label: "Move line start" });
+                  else if (selected) heads.push({ key: "start", at: start, index: -2, label: "Move line start" });
+                  if (arrow === "end" || arrow === "both") heads.push({ key: "end", at: arrowSeat(end, route.points[route.points.length - 2] ?? start), index: -3, label: "Move line end" });
+                  else if (selected) heads.push({ key: "end", at: end, index: -3, label: "Move line end" });
+                  const corners = selected ? (route.corners.length ? route.corners : [route.handle]) : [];
+                  return [
+                    ...heads.map((head) => (
+                      <div
+                        key={`${edge.id}-${head.key}`}
+                        aria-label={head.label}
+                        title="Drag the arrow around the symbol to change the side it points to."
+                        className={cn(
+                          "absolute z-30 flex -translate-x-1/2 -translate-y-1/2 cursor-grab items-center justify-center active:cursor-grabbing",
+                          selected ? "size-7" : "size-6",
+                        )}
+                        style={{ left: head.at.x, top: head.at.y }}
+                        onPointerDown={(event) => onEdgePointerDown(event, edge.id, head.index)}
+                      >
+                        {selected ? <span className="size-3 rounded-sm border border-[#1b4f9c] bg-white" /> : <span className="size-4 rounded-full hover:bg-[#1b4f9c]/20" />}
+                      </div>
+                    )),
+                    ...corners.map((corner, index) => (
+                      <div
+                        key={`${edge.id}-corner-${index}`}
+                        aria-label="Move corner"
+                        title={route.corners.length ? "Drag to move this corner. The end on the symbol moves with it. Right-click to remove it." : "Drag to bend this line. Right-click to add a corner."}
+                        className="absolute z-20 size-3 -translate-x-1/2 -translate-y-1/2 cursor-grab rounded-full border border-[#1b4f9c] bg-white active:cursor-grabbing"
+                        style={{ left: corner.x, top: corner.y }}
+                        onPointerDown={(event) => onEdgePointerDown(event, edge.id, index)}
+                        onContextMenu={(event) => openEdgeMenu(event, edge.id, route.corners.length ? index : null)}
+                      />
+                    )),
+                  ];
                 })
               : null}
             {lineIcons.map((icon) => (
@@ -1316,8 +1835,24 @@ export function MifaDesigner() {
                 className={cn("absolute z-[12]", mode === "design" && tool === "select" && "cursor-grab active:cursor-grabbing")}
                 style={{ left: icon.x, top: icon.y, width: icon.width, height: icon.height, opacity: opacityFor("edge", icon.edgeId) }}
                 onPointerDown={(event) => {
-                  if (mode !== "design" || tool !== "select" || event.button !== 0) return;
+                  if (spaceRef.current || event.button !== 0) return;
+                  if (mode === "design" && (tool === "text" || tool === "rectangle" || tool === "ellipse")) {
+                    event.stopPropagation();
+                    placeBasic(tool, sheetPoint(event));
+                    return;
+                  }
+                  if (mode !== "design" || (tool !== "select" && !binding)) return;
                   event.stopPropagation();
+                  if (binding) {
+                    const under = bindTarget(binding.column)?.role === "symbol" ? nodeUnder(event.clientX, event.clientY) : null;
+                    if (under) {
+                      useBinding(under);
+                      return;
+                    }
+                    const edge = visibleEdges.find((item) => item.id === icon.edgeId);
+                    if (edge) useBinding(edge);
+                    return;
+                  }
                   setSelectedEdgeId(null);
                   setLinkFrom(null);
                   beginMove(icon.id, sheetPoint(event), icon);
@@ -1326,7 +1861,9 @@ export function MifaDesigner() {
                 onPointerMove={onNodePointerMove}
                 onPointerUp={onNodePointerUp}
               >
-                <VectorArt art={icon.art} width={icon.width} height={icon.height} selected={selectedNodeId === icon.id} />
+                <Posed width={icon.width} height={icon.height} pose={icon}>
+                  <VectorArt art={icon.art} width={innerSize(icon.width, icon.height, icon.turn).width} height={innerSize(icon.width, icon.height, icon.turn).height} selected={selectedNodeId === icon.id || group.includes(icon.id)} />
+                </Posed>
               </div>
             ))}
             <svg className="pointer-events-none absolute inset-0 z-10 h-full w-full">
@@ -1340,7 +1877,7 @@ export function MifaDesigner() {
                 const from = nodeBox(edge.from);
                 const to = nodeBox(edge.to);
                 if (!from || !to) return null;
-                const route = edgeRoute(from, to, doc.bends?.[edge.id], lanes.get(edge.id) ?? 0);
+                const route = edgeRoute(from, to, doc.bends?.[edge.id], lanes.get(edge.id) ?? 0, sheet);
                 const textWidth = Math.max(28, caption.length * 6.4 + 12);
                 return (
                   <g key={edge.id} transform={`translate(${route.label.x} ${route.label.y})`} style={{ opacity: opacityFor("edge", edge.id) }}>
@@ -1352,11 +1889,13 @@ export function MifaDesigner() {
                 );
               })}
             </svg>
+            </div>
             <div className="pointer-events-none absolute bottom-4 left-4 flex items-center gap-2 rounded-md border border-[#d0d7de] bg-white/95 px-1.5 py-1">
               <LineGlyph kind="material" title="Material" />
               <LineGlyph kind="information" title="Information" />
               <LineGlyph kind="empty" title="Empty return" />
             </div>
+            {mode === "design" ? <SheetEdges zoom={view.zoom} onResizeStart={onSheetEdge} /> : null}
           </div>
         </div>
         <div className="absolute right-3 bottom-3 flex items-center gap-1 rounded-lg border border-[#d0d7de] bg-white p-0.5 shadow-sm">
@@ -1381,7 +1920,17 @@ export function MifaDesigner() {
             <Plus />
           </Button>
         </div>
-        {mode === "design" && linkFrom ? (
+        {mode === "design" && binding ? (
+          <div className="absolute top-3 left-1/2 z-40 flex -translate-x-1/2 items-center gap-3 rounded-lg border border-[#1b4f9c] bg-white px-3 py-2 text-sm shadow-sm">
+            Click the {bindTarget(binding.column)?.role === "line" ? "line" : "symbol"} this {FLOW_COLUMNS.find((column) => column.key === binding.column)?.header ?? "cell"} should use.
+            <Tip label="Cancel binding">
+              <button type="button" className="font-medium text-[#1b4f9c]" onClick={() => setBinding(null)}>
+                Cancel
+              </button>
+            </Tip>
+          </div>
+        ) : null}
+        {mode === "design" && linkFrom && !binding ? (
           <div className="absolute top-3 left-1/2 z-40 flex -translate-x-1/2 items-center gap-3 rounded-lg border border-[#1b4f9c] bg-white px-3 py-2 text-sm shadow-sm">
             Click the symbol this line should reach.
             <Tip label="Cancel line">
@@ -1390,6 +1939,43 @@ export function MifaDesigner() {
               </button>
             </Tip>
           </div>
+        ) : null}
+        {mode === "design" && !linkFrom && textItems.length ? (
+          <TextStyleBar
+            color={sameValue(textItems.map((item) => (item.color ?? "#202124").toLowerCase())) ?? ""}
+            align={sameValue(textItems.map((item) => item.align ?? "center"))}
+            bold={textItems.every((item) => item.bold)}
+            size={sameValue(textItems.map((item) => item.font ?? 14))}
+            onSmaller={() => stepTextSize(textItems, 4 / 5)}
+            onLarger={() => stepTextSize(textItems, 5 / 4)}
+            onSize={(font) => setTextSize(textItems, font)}
+            onAlign={(align) => paintText({ align })}
+            onBold={() => paintText({ bold: !textItems.every((item) => item.bold) })}
+            onColor={(color) => paintText({ color })}
+          />
+        ) : null}
+        {mode === "design" && !linkFrom && shapeItems.length ? (
+          <ShapeStyleBar
+            fill={sameValue(shapeItems.map((item) => (item.fill ?? "#ffffff").toLowerCase())) ?? ""}
+            border={sameValue(shapeItems.map((item) => (item.border ?? "#202124").toLowerCase())) ?? ""}
+            weight={sameValue(shapeItems.map((item) => item.weight ?? 1))}
+            onFill={(fill) => paintShape({ fill })}
+            onBorder={(border) => paintShape({ border, ...(shapeItems.every((item) => (item.weight ?? 1) === 0) ? { weight: 1 } : {}) })}
+            onWeight={(weight) => paintShape({ weight })}
+          />
+        ) : null}
+        {mode === "design" && !linkFrom && symbolItems.length ? (
+          <SymbolStyleBar
+            flipped={symbolItems.every((item) => item.pose.flip)}
+            size={sameValue(symbolItems.map((item) => symbolPercent(item.box, item.natural.width, item.pose.turn)))}
+            onSmaller={() => resizePicked(symbolItems, 4 / 5)}
+            onLarger={() => resizePicked(symbolItems, 5 / 4)}
+            onSize={(percent) => setSymbolSize(symbolItems, percent)}
+            onFlip={() => flipPicked(symbolItems)}
+            onRotate={() => rotatePicked(symbolItems)}
+            locked={flowSymbols ? symbolItems.every((item) => doc.locks?.[item.id]) : null}
+            onLock={() => holdSymbols(symbolItems)}
+          />
         ) : null}
         {mode === "design" && selectedEdge && !linkFrom ? (
           <LineStyleBar
@@ -1401,9 +1987,10 @@ export function MifaDesigner() {
             onArrow={(arrow) => paintEdge({ arrow: arrowOnScreen(arrow, screenArrow(selectedEdge)) })}
           />
         ) : null}
+        {mode === "preview" && hover ? <FlowNote sheet={sheet} hover={hover} links={drawnEdges} /> : null}
       </div>
 
-      {dataOpen ? (
+      {mode === "design" && dataOpen ? (
         <section className="flex h-[300px] shrink-0 flex-col border-t border-[#d0d7de] bg-white">
           <div className="flex flex-wrap items-end gap-2 border-b border-[#d0d7de] px-3 py-2">
             <Field label="Plant" value={project.plant} onChange={(value) => patchProject("plant", value)} />
@@ -1427,14 +2014,29 @@ export function MifaDesigner() {
             <Field label="Diversity" value={project.diversity} onChange={(value) => patchProject("diversity", value)} width="w-36" />
             <Field label="Updated" value={project.updated} onChange={(value) => patchProject("updated", value)} width="w-28" />
             <div className="ml-auto flex items-center gap-1">
+              <input
+                ref={fileRef}
+                type="file"
+                accept=".xlsx,.xls"
+                className="hidden"
+                onChange={(event) => {
+                  const file = event.target.files?.[0];
+                  event.target.value = "";
+                  if (file) void onImport(file);
+                }}
+              />
+              <Button variant="outline" size="icon-sm" className="size-8" title="Import Excel" aria-label="Import Excel" onClick={() => fileRef.current?.click()}>
+                <Upload />
+              </Button>
+              <Button variant="outline" size="icon-sm" className="size-8" title="Export Excel" aria-label="Export Excel" onClick={() => downloadWorkbook(doc)}>
+                <Download />
+              </Button>
+              <Button variant="outline" size="icon-sm" className="size-8" title="Hide the data bar" aria-label="Hide data" onClick={() => setDataOpen(false)}>
+                <PanelBottomClose />
+              </Button>
+              <span className="mx-1 h-5 w-px bg-[#d0d7de]" />
               <Button variant="outline" size="icon-sm" className="size-8" title="Add flow" aria-label="Add flow" onClick={addFlow}>
                 <Plus />
-              </Button>
-              <Button variant="outline" size="icon-sm" className="size-8" title="New MIFA" aria-label="New MIFA" onClick={() => createMifa(archive.openFolderId)}>
-                <FilePlus />
-              </Button>
-              <Button variant="outline" size="icon-sm" className="size-8" title="Example" aria-label="Example" onClick={() => replace(exampleDocument())}>
-                <BookOpen />
               </Button>
             </div>
           </div>
@@ -1451,7 +2053,14 @@ export function MifaDesigner() {
                 </tr>
                 <tr>
                   {FLOW_COLUMNS.map((column) => (
-                    <th key={column.key} title={column.header} className="border-r border-b border-[#d0d7de] px-2 py-1 font-medium whitespace-nowrap text-[#202124]">
+                    <th
+                      key={column.key}
+                      title={column.header}
+                      className={cn(
+                        "border-r border-b border-[#d0d7de] px-2 py-1 font-medium whitespace-nowrap text-[#202124]",
+                        tableFocus.column === column.key && "bg-[#c6dafc] text-[#174ea6]",
+                      )}
+                    >
                       {column.short}
                     </th>
                   ))}
@@ -1460,21 +2069,71 @@ export function MifaDesigner() {
               </thead>
               <tbody>
                 {doc.flows.map((flow) => {
-                  const selected = flow.id === selectedFlowId;
+                  const rowOn = tableFocus.flows.includes(flow.id);
                   return (
                     <tr
                       key={flow.id}
-                      className={cn(selected && "bg-[#e8f0fe]")}
+                      className={cn(rowOn && "bg-[#e8f0fe]")}
                       onClick={() => {
                         setSelectedFlowId(flow.id);
                         setSelectedNodeId(null);
+                        setSelectedEdgeId(null);
+                        setGroup([]);
                       }}
                     >
-                      {FLOW_COLUMNS.map((column) => (
-                        <td key={column.key} className="border-r border-b border-[#e6e9ed] px-1 py-0.5 align-middle">
-                          <FlowCell flow={flow} column={column.key} onChange={(value) => patchFlow(flow.id, column.key, value)} />
-                        </td>
-                      ))}
+                      {FLOW_COLUMNS.map((column) => {
+                        const cellOn = rowOn && tableFocus.column === column.key;
+                        return (
+                          <td
+                            key={column.key}
+                            ref={
+                              cellOn
+                                ? (element) => {
+                                    if (element && !tableCellRef.current) tableCellRef.current = element;
+                                  }
+                                : undefined
+                            }
+                            className={cn(
+                              "group relative border-r border-b border-[#e6e9ed] px-1 py-0.5 align-middle",
+                              bindTarget(column.key) && "pr-6",
+                              tableFocus.column === column.key && "bg-[#e8f0fe]",
+                              cellOn && "bg-[#c6dafc] outline outline-2 -outline-offset-2 outline-[#1b4f9c]",
+                              binding?.flowId === flow.id && binding.column === column.key && "bg-[#d2e3fc]",
+                            )}
+                          >
+                            <FlowCell flow={flow} column={column.key} onChange={(value) => patchFlow(flow.id, column.key, value)} />
+                            {mode === "design" && bindTarget(column.key) ? (
+                              <Tip label="Bind to a symbol">
+                                <button
+                                  type="button"
+                                  aria-label={`Bind ${column.header}`}
+                                  aria-pressed={binding?.flowId === flow.id && binding.column === column.key}
+                                  className={cn(
+                                    "absolute top-1/2 right-0.5 flex size-5 -translate-y-1/2 items-center justify-center rounded text-[#1b4f9c]",
+                                    binding?.flowId === flow.id && binding.column === column.key
+                                      ? "bg-[#1b4f9c] text-white"
+                                      : "opacity-0 group-hover:opacity-100 hover:bg-[#e8f0fe]",
+                                  )}
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    setSelectedFlowId(flow.id);
+                                    setSelectedNodeId(null);
+                                    setSelectedEdgeId(null);
+                                    setGroup([]);
+                                    setLinkFrom(null);
+                                    setTool("select");
+                                    setArmed(null);
+                                    setBinding({ flowId: flow.id, column: column.key });
+                                    setNotice("");
+                                  }}
+                                >
+                                  <Link2 className="size-3" />
+                                </button>
+                              </Tip>
+                            ) : null}
+                          </td>
+                        );
+                      })}
                       <td className="border-b border-[#e6e9ed] px-1">
                         <Tip label="Delete flow">
                           <button type="button" aria-label="Delete flow" className="flex size-6 items-center justify-center rounded text-[#c5221f] hover:bg-[#c5221f]/10" onClick={() => deleteFlow(flow.id)}>
@@ -1489,6 +2148,12 @@ export function MifaDesigner() {
             </table>
           </div>
         </section>
+      ) : mode === "design" ? (
+        <div className="flex h-10 shrink-0 items-center justify-end border-t border-[#d0d7de] bg-white px-3">
+          <Button variant="outline" size="icon-sm" className="size-8" title="Show the data bar" aria-label="Show data" onClick={() => setDataOpen(true)}>
+            <PanelBottomOpen />
+          </Button>
+        </div>
       ) : null}
       </div>
       </div>
@@ -1498,13 +2163,59 @@ export function MifaDesigner() {
           style={{ left: menu.x, top: menu.y }}
           onPointerDown={(event) => event.stopPropagation()}
         >
-          {menu.id && linkFrom && linkFrom !== menu.id ? <MenuItem label="Connect the line here" onClick={() => { const id = menu.id; setMenu(null); if (id) finishLink(linkFrom, id); }} /> : null}
-          {menu.id ? <MenuItem label="Draw a line" onClick={() => { const id = menu.id; setMenu(null); if (!id) return; setLinkFrom(id); setSelectedNodeId(id); setGroup([id]); setSelectedEdgeId(null); setTool("select"); }} /> : null}
-          {menu.id ? <MenuItem label="Bring to front" onClick={() => menu.id && restack(menu.id, "front")} /> : null}
-          {menu.id ? <MenuItem label="Send to back" onClick={() => menu.id && restack(menu.id, "back")} /> : null}
-          {menu.id ? <MenuItem label="Delete" onClick={() => menu.id && deleteSymbol(menu.id)} /> : null}
-          {!menu.id && linkFrom ? <MenuItem label="Cancel line" onClick={() => { setLinkFrom(null); setMenu(null); }} /> : null}
-          {!menu.id ? <MenuItem label="Add symbol" onClick={() => { setDropAt(menu.at); setMenu(null); setLibraryOpen(true); setTool("select"); setArmed(null); setLinkFrom(null); }} /> : null}
+          {menu.edgeId ? (
+            <>
+              <MenuItem label="Add a corner" onClick={() => menu.edgeId && editLine(menu.edgeId, (from, to, bend) => addLineCorner(from, to, bend, menu.at))} />
+              {menu.corner !== null ? (
+                <MenuItem label="Remove this corner" onClick={() => menu.edgeId && menu.corner !== null && editLine(menu.edgeId, (from, to, bend) => removeLineCorner(from, to, bend, menu.corner!))} />
+              ) : lineCorners(menu.edgeId).length ? (
+                <MenuItem
+                  label="Remove nearest corner"
+                  onClick={() => {
+                    const edgeId = menu.edgeId;
+                    if (!edgeId) return;
+                    const corners = lineCorners(edgeId);
+                    let nearest = 0;
+                    let distance = Infinity;
+                    corners.forEach((corner, index) => {
+                      const gap = Math.hypot(corner.x - menu.at.x, corner.y - menu.at.y);
+                      if (gap < distance) {
+                        distance = gap;
+                        nearest = index;
+                      }
+                    });
+                    editLine(edgeId, (start, end, bend) => removeLineCorner(start, end, bend, nearest));
+                  }}
+                />
+              ) : null}
+              {doc.bends?.[menu.edgeId] ? <MenuItem label="Reset the line" onClick={() => menu.edgeId && editLine(menu.edgeId, () => null)} /> : null}
+              {(doc.links ?? []).some((link) => link.id === menu.edgeId) ? (
+                <MenuItem
+                  label="Delete line"
+                  onClick={() => {
+                    const edgeId = menu.edgeId;
+                    if (!edgeId) return;
+                    commit((current) => {
+                      const bends = { ...(current.bends ?? {}) };
+                      delete bends[edgeId];
+                      return { ...current, links: (current.links ?? []).filter((link) => link.id !== edgeId), bends };
+                    });
+                    setMenu(null);
+                    setSelectedEdgeId(null);
+                  }}
+                />
+              ) : null}
+            </>
+          ) : null}
+          {!menu.edgeId && menu.id && linkFrom && linkFrom !== menu.id ? <MenuItem label="Connect the line here" onClick={() => { const id = menu.id; setMenu(null); if (id) finishLink(linkFrom, id); }} /> : null}
+          {!menu.edgeId && menu.id ? <MenuItem label="Draw a line" onClick={() => { const id = menu.id; setMenu(null); if (!id) return; setLinkFrom(id); setSelectedNodeId(id); setGroup([id]); setSelectedEdgeId(null); setTool("select"); }} /> : null}
+          {!menu.edgeId && menu.id ? <MenuItem label="Copy" onClick={() => actions.current.copy()} /> : null}
+          {!menu.edgeId && canPaste ? <MenuItem label="Paste" onClick={() => actions.current.paste()} /> : null}
+          {!menu.edgeId && menu.id ? <MenuItem label="Bring to front" onClick={() => menu.id && restack(menu.id, "front")} /> : null}
+          {!menu.edgeId && menu.id ? <MenuItem label="Send to back" onClick={() => menu.id && restack(menu.id, "back")} /> : null}
+          {!menu.edgeId && menu.id ? <MenuItem label="Delete" onClick={() => menu.id && deleteSymbol(menu.id)} /> : null}
+          {!menu.edgeId && !menu.id && linkFrom ? <MenuItem label="Cancel line" onClick={() => { setLinkFrom(null); setMenu(null); }} /> : null}
+          {!menu.edgeId && !menu.id ? <MenuItem label="Add symbol" onClick={() => { setDropAt(menu.at); setMenu(null); setLibraryOpen(true); setTool("select"); setArmed(null); setLinkFrom(null); }} /> : null}
         </div>
       ) : null}
     </div>
@@ -1551,17 +2262,56 @@ function endsOf(doc: MifaDocument, id: string) {
   return { from, to };
 }
 
-function fitOnSheet(x: number, y: number, width: number, height: number) {
+function snapshotSymbol(
+  doc: MifaDocument,
+  nodes: SheetNode[],
+  icons: { id: string; art: SymbolArt; x: number; y: number; width: number; height: number; flip?: boolean; turn?: QuarterTurn }[],
+  id: string,
+): Mark | null {
+  const mark = doc.marks?.find((item) => item.id === id);
+  if (mark) return { ...mark };
+  const node = nodes.find((item) => item.id === id);
+  if (node) {
+    const pose = doc.poses?.[id];
+    return {
+      id: node.id,
+      name: node.label,
+      symbol: node.symbol,
+      x: node.x,
+      y: node.y,
+      width: node.width,
+      height: node.height,
+      ...(pose?.flip ? { flip: true } : {}),
+      ...(pose?.turn ? { turn: pose.turn } : {}),
+    };
+  }
+  const icon = icons.find((item) => item.id === id);
+  if (!icon) return null;
   return {
-    x: Math.min(Math.max(0, x), Math.max(0, SHEET_WIDTH - width)),
-    y: Math.min(Math.max(0, y), Math.max(0, SHEET_HEIGHT - height)),
+    id: icon.id,
+    name: icon.art.name,
+    symbol: "rectangle",
+    artwork: icon.art.id,
+    x: icon.x,
+    y: icon.y,
+    width: icon.width,
+    height: icon.height,
+    ...(icon.flip ? { flip: true } : {}),
+    ...(icon.turn ? { turn: icon.turn } : {}),
   };
 }
 
-function fitBox(box: { x: number; y: number; width: number; height: number }) {
-  const width = Math.min(box.width, SHEET_WIDTH);
-  const height = Math.min(box.height, SHEET_HEIGHT);
-  return { ...fitOnSheet(box.x, box.y, width, height), width, height };
+function fitOnSheet(x: number, y: number, width: number, height: number, page: SheetBox) {
+  return {
+    x: Math.min(Math.max(page.x, x), Math.max(page.x, page.x + page.width - width)),
+    y: Math.min(Math.max(page.y, y), Math.max(page.y, page.y + page.height - height)),
+  };
+}
+
+function fitBox(box: { x: number; y: number; width: number; height: number }, page: SheetBox) {
+  const width = Math.min(box.width, page.width);
+  const height = Math.min(box.height, page.height);
+  return { ...fitOnSheet(box.x, box.y, width, height, page), width, height };
 }
 
 function boxFor(
@@ -1586,7 +2336,11 @@ function boxFor(
 }
 
 function applyBox(doc: MifaDocument, id: string, box: { x: number; y: number; width: number; height: number }): MifaDocument {
-  if (id.startsWith("icon:")) return { ...doc, icons: { ...doc.icons, [id.slice(5)]: box } };
+  if (id.startsWith("icon:")) {
+    const key = id.slice(5);
+    const prev = doc.icons?.[key];
+    return { ...doc, icons: { ...doc.icons, [key]: { ...box, ...(prev?.flip ? { flip: true } : {}), ...(prev?.turn ? { turn: prev.turn } : {}), ...(prev?.placed === false ? { placed: false as const } : {}), ...(prev?.placed === true ? { placed: true as const } : {}) } } };
+  }
   if (id.startsWith("mark-")) {
     return { ...doc, marks: (doc.marks ?? []).map((mark) => (mark.id === id ? { ...mark, ...box } : mark)) };
   }
@@ -1595,31 +2349,6 @@ function applyBox(doc: MifaDocument, id: string, box: { x: number; y: number; wi
     positions: { ...doc.positions, [id]: { x: box.x, y: box.y } },
     sizes: { ...(doc.sizes ?? {}), [id]: { width: box.width, height: box.height } },
   };
-}
-
-function resizedBox(handle: string, origin: { x: number; y: number; width: number; height: number }, dx: number, dy: number) {
-  let { x, y, width, height } = origin;
-  const minW = 40;
-  const minH = 36;
-  if (handle.includes("e")) width = origin.width + dx;
-  if (handle.includes("s")) height = origin.height + dy;
-  if (handle.includes("w")) {
-    width = origin.width - dx;
-    x = origin.x + dx;
-  }
-  if (handle.includes("n")) {
-    height = origin.height - dy;
-    y = origin.y + dy;
-  }
-  if (width < minW) {
-    if (handle.includes("w")) x -= minW - width;
-    width = minW;
-  }
-  if (height < minH) {
-    if (handle.includes("n")) y -= minH - height;
-    height = minH;
-  }
-  return { x: snap(x), y: snap(y), width: Math.max(minW, snap(width)), height: Math.max(minH, snap(height)) };
 }
 
 const RESIZE_HANDLES = ["nw", "n", "ne", "e", "se", "s", "sw", "w"] as const;
@@ -1689,7 +2418,7 @@ function SymbolRail({
     tool === "add"
       ? "Click the sheet once to place it. Select returns after that."
       : tool === "text"
-        ? "Click the sheet once to place text. Select returns after that."
+        ? "Click to place text. The tool stays on, including over a symbol."
         : tool === "rectangle" || tool === "ellipse"
           ? "Click the sheet once to place the shape. Select returns after that."
           : armed?.link
@@ -1709,16 +2438,20 @@ function SymbolRail({
       <RailButton label="Rect" title="Rectangle" active={tool === "rectangle"} onClick={() => onBasic("rectangle")}>
         <Square />
       </RailButton>
-      <RailButton label="Oval" title="Ellipse" active={tool === "ellipse"} onClick={() => onBasic("ellipse")}>
+      <RailButton label="Circle" title="Circle" active={tool === "ellipse"} onClick={() => onBasic("ellipse")}>
         <Circle />
       </RailButton>
       <div className="mt-auto flex flex-col items-center gap-2 px-1.5 pb-2">
         {armed ? (
           <div className="flex flex-col items-center gap-1" title={armed.name}>
-            {armed.artwork && ART_BY_ID[armed.artwork] ? (
-              <VectorArt art={ART_BY_ID[armed.artwork]} width={40} height={30} />
+            {armed.artwork && linePattern(armed.artwork) ? (
+              <ProductionLineArt width={18} height={52} pattern={linePattern(armed.artwork) ?? "sequence"} />
+            ) : armed.artwork && ART_BY_ID[armed.artwork] ? (
+              <VectorArt art={ART_BY_ID[armed.artwork]} {...fittedArt(ART_BY_ID[armed.artwork], 40, 30)} />
             ) : armed.link ? (
               <LineGlyph kind={armed.link.kind} />
+            ) : armed.symbol === "production" ? (
+              <ProductionLineArt width={18} height={52} />
             ) : (
               <SymbolShape symbol={armed.symbol} width={40} height={30} />
             )}
@@ -1733,44 +2466,77 @@ function SymbolRail({
 
 const SYMBOL_NAV: { id: string; name: string; children?: { id: string; name: string }[] }[] = [
   { id: "Process", name: "Process" },
-  {
-    id: "Inventories",
-    name: "Inventories",
-    children: [
-      { id: "Inventories/Big Container", name: "Big Container" },
-      { id: "Inventories/Contolled inventory", name: "Contolled inventory" },
-      { id: "Inventories/Small Box (Pallet)", name: "Small Box (Pallet)" },
-      { id: "Inventories/Uncontroled Inventory", name: "Uncontroled Inventory" },
-    ],
-  },
-  {
-    id: "Materials",
-    name: "Materials",
-    children: [
-      { id: "Materials/Forklift LV Delivery", name: "Forklift LV Delivery" },
-      { id: "Materials/Forklift SB Delivery", name: "Forklift SB Delivery" },
-    ],
-  },
+  { id: "Inventories", name: "Inventories" },
+  { id: "Material", name: "Material" },
   { id: "Information", name: "Information" },
+  { id: "Others", name: "Others" },
+  { id: "SPECIFICS", name: "SPECIFICS" },
+  { id: "SPECIF_DESIGN", name: "SPECIF_DESIGN" },
 ];
 
+function chosenSize(item: LibraryItem) {
+  if (item.artwork && linePattern(item.artwork)) return productionLineBox();
+  if (item.artwork && ART_BY_ID[item.artwork]) return artBox(ART_BY_ID[item.artwork]);
+  return SYMBOL_SIZE[item.symbol];
+}
+
 function artLibraryItem(art: SymbolArt): LibraryItem {
-  const family = art.folder.startsWith("Inventories") ? "Inventories" : art.folder.startsWith("Materials") ? "Material" : "Process";
+  const family = art.folder === "Inventories" || art.folder === "Material" || art.folder === "Information" ? art.folder : "Process";
   return { id: `art:${art.id}`, name: art.name, fr: art.folder, family, symbol: "rectangle", artwork: art.id };
 }
 
-function SymbolLibrary({ armedId, onPick, onClose }: { armedId: string | null; onPick: (item: LibraryItem) => void; onClose: () => void }) {
+function SymbolLibrary({
+  armedId,
+  onPick,
+  onDrop,
+  onClose,
+}: {
+  armedId: string | null;
+  onPick: (item: LibraryItem) => void;
+  onDrop: (item: LibraryItem, client: { clientX: number; clientY: number }) => void;
+  onClose: () => void;
+}) {
   const [folder, setFolder] = useState("Process");
   const [query, setQuery] = useState("");
+  const [ghost, setGhost] = useState<{ item: LibraryItem; x: number; y: number } | null>(null);
+  const drag = useRef<{ item: LibraryItem; x: number; y: number; moved: boolean } | null>(null);
+  const swallowClick = useRef(false);
   const q = query.trim().toLowerCase();
-  const family = folder === "Process" || folder === "Inventories" || folder === "Information" ? folder : folder === "Materials" ? "Material" : null;
   const drawings = SYMBOL_ART.filter((art) => (q ? `${art.name} ${art.folder}`.toLowerCase().includes(q) : art.folder === folder)).map(artLibraryItem);
-  const legacy = LIBRARY.filter((item) => {
-    const haystack = `${item.name} ${item.fr} ${item.family}`.toLowerCase();
-    if (q) return haystack.includes(q);
-    return family !== null && item.family === family;
-  });
-  const items = [...drawings, ...legacy];
+  const items = drawings;
+
+  useEffect(() => {
+    if (!ghost) return;
+    const previous = document.body.style.cursor;
+    document.body.style.cursor = "grabbing";
+    return () => {
+      document.body.style.cursor = previous;
+    };
+  }, [ghost]);
+
+  function onTilePointerDown(event: ReactPointerEvent<HTMLButtonElement>, item: LibraryItem) {
+    if (event.button !== 0) return;
+    drag.current = { item, x: event.clientX, y: event.clientY, moved: false };
+    event.currentTarget.setPointerCapture(event.pointerId);
+  }
+
+  function onTilePointerMove(event: ReactPointerEvent<HTMLButtonElement>) {
+    const current = drag.current;
+    if (!current) return;
+    if (!current.moved && Math.hypot(event.clientX - current.x, event.clientY - current.y) < 4) return;
+    current.moved = true;
+    setGhost({ item: current.item, x: event.clientX, y: event.clientY });
+  }
+
+  function onTilePointerUp(event: ReactPointerEvent<HTMLButtonElement>) {
+    const current = drag.current;
+    drag.current = null;
+    setGhost(null);
+    if (!current?.moved) return;
+    swallowClick.current = true;
+    onDrop(current.item, { clientX: event.clientX, clientY: event.clientY });
+  }
+
   return (
     <div className="flex h-full flex-col bg-white">
       <div className="flex items-center justify-between border-b border-[#d0d7de] px-3 py-2">
@@ -1798,38 +2564,68 @@ function SymbolLibrary({ armedId, onPick, onClose }: { armedId: string | null; o
         <div className="min-h-0 flex-1 overflow-auto p-3">
           {items.length ? (
             <div className="grid grid-cols-2 gap-2">
-              {items.map((item) => {
-                const art = item.artwork ? ART_BY_ID[item.artwork] : undefined;
-                const fit = art ? Math.min(88 / art.width, 52 / art.height) : 1;
-                return (
-                  <Tip key={item.id} label={item.artwork ? item.name : `${item.name} · ${item.fr}`}>
-                    <button
-                      type="button"
-                      aria-label={item.name}
-                      aria-pressed={armedId === item.id}
-                      onClick={() => onPick(item)}
-                      className={cn(
-                        "flex h-full flex-col items-center gap-2 rounded-lg border bg-white px-2 py-3 text-center",
-                        armedId === item.id ? "border-[#1b4f9c] ring-1 ring-[#1b4f9c]" : "border-[#d0d7de] hover:bg-[#f8f9fa]",
-                      )}
-                    >
-                      <span className="flex h-14 items-center justify-center">
-                        {art ? <VectorArt art={art} width={art.width * fit} height={art.height * fit} /> : item.link ? <LineGlyph kind={item.link.kind} /> : <SymbolShape symbol={item.symbol} width={72} height={48} />}
-                      </span>
-                      <span className="text-[13px] leading-tight text-[#202124]">{item.name}</span>
-                      <span className="text-[11px] leading-tight text-[#5f6368]">{q && item.artwork ? item.fr : item.artwork ? "" : item.fr}</span>
-                    </button>
-                  </Tip>
-                );
-              })}
+              {items.map((item) => (
+                <Tip key={item.id} label={item.artwork ? item.name : `${item.name} · ${item.fr}`}>
+                  <button
+                    type="button"
+                    aria-label={item.name}
+                    aria-pressed={armedId === item.id}
+                    onPointerDown={(event) => onTilePointerDown(event, item)}
+                    onPointerMove={onTilePointerMove}
+                    onPointerUp={onTilePointerUp}
+                    onClick={() => {
+                      if (swallowClick.current) {
+                        swallowClick.current = false;
+                        return;
+                      }
+                      onPick(item);
+                    }}
+                    className={cn(
+                      "flex h-full cursor-grab flex-col items-center gap-2 rounded-lg border bg-white px-2 py-3 text-center active:cursor-grabbing",
+                      armedId === item.id ? "border-[#1b4f9c] ring-1 ring-[#1b4f9c]" : "border-[#d0d7de] hover:bg-[#f8f9fa]",
+                    )}
+                  >
+                    <span className="flex h-14 items-center justify-center">
+                      <SymbolPreview item={item} width={88} height={52} />
+                    </span>
+                    <span className="text-[13px] leading-tight text-[#202124]">{item.name}</span>
+                    <span className="text-[11px] leading-tight text-[#5f6368]">{q && item.artwork ? item.fr : item.artwork ? "" : item.fr}</span>
+                  </button>
+                </Tip>
+              ))}
             </div>
           ) : (
             <p className="px-2 py-6 text-sm text-[#5f6368]">{q ? "No symbols match that search." : "No symbols in this folder yet."}</p>
           )}
         </div>
       </div>
+      {ghost
+        ? createPortal(
+            <div className="pointer-events-none fixed z-[80]" style={{ left: ghost.x, top: ghost.y, transform: "translate(-50%, -50%)" }}>
+              <div className="rounded-lg border border-[#1b4f9c] bg-white/90 p-2 shadow-md">
+                <SymbolPreview item={ghost.item} width={72} height={48} />
+              </div>
+            </div>,
+            document.body,
+          )
+        : null}
     </div>
   );
+}
+
+function fittedArt(art: SymbolArt, width: number, height: number) {
+  const bounds = artBounds(art);
+  const fit = Math.min(width / bounds.width, height / bounds.height);
+  return { width: bounds.width * fit, height: bounds.height * fit };
+}
+
+function SymbolPreview({ item, width, height }: { item: LibraryItem; width: number; height: number }) {
+  const art = item.artwork ? ART_BY_ID[item.artwork] : undefined;
+  const pattern = item.artwork ? linePattern(item.artwork) : item.symbol === "production" ? "sequence" : null;
+  if (pattern) return <ProductionLineArt width={Math.min(28, width)} height={height} pattern={pattern} />;
+  if (art) return <VectorArt art={art} {...fittedArt(art, width, height)} />;
+  if (item.link) return <LineGlyph kind={item.link.kind} />;
+  return <SymbolShape symbol={item.symbol} width={width} height={height} />;
 }
 
 function FolderButton({ name, selected, nested = false, onClick }: { name: string; selected: boolean; nested?: boolean; onClick: () => void }) {
@@ -1844,6 +2640,351 @@ function FolderButton({ name, selected, nested = false, onClick }: { name: strin
         {name}
       </button>
     </Tip>
+  );
+}
+
+type ObjectPick = {
+  id: string;
+  kind: "text" | "symbol" | "shape";
+  box: Box;
+  natural: { width: number; height: number };
+  pose: { flip?: boolean; turn?: QuarterTurn };
+  color?: string;
+  align?: TextAlign;
+  bold?: boolean;
+  font?: number;
+  fill?: string;
+  border?: string;
+  weight?: number;
+};
+
+function describeObject(
+  doc: MifaDocument,
+  nodes: SheetNode[],
+  marks: Mark[],
+  icons: { id: string; art?: SymbolArt; x: number; y: number; width: number; height: number; flip?: boolean; turn?: QuarterTurn }[],
+  id: string,
+): ObjectPick | null {
+  const icon = icons.find((item) => item.id === id);
+  if (icon) {
+    const natural = icon.art ? fittedIconBox(artBounds(icon.art)) : { width: icon.width, height: icon.height };
+    return { id, kind: "symbol", box: icon, natural, pose: { flip: icon.flip, turn: icon.turn } };
+  }
+  const mark = marks.find((item) => item.id === id);
+  if (mark) {
+    const box = {
+      x: mark.x,
+      y: mark.y,
+      width: mark.width ?? SYMBOL_SIZE[mark.symbol].width,
+      height: mark.height ?? SYMBOL_SIZE[mark.symbol].height,
+    };
+    const art = mark.artwork ? ART_BY_ID[mark.artwork] : undefined;
+    const natural = art ? artBox(art) : SYMBOL_SIZE[mark.symbol];
+    if (mark.shape === "rectangle" || mark.shape === "ellipse") {
+      return { id, kind: "shape", box, natural: { width: box.width, height: box.height }, pose: {}, fill: mark.fill, border: mark.border, weight: mark.weight };
+    }
+    if (mark.shape === "text") return { id, kind: "text", box, natural, pose: {}, color: mark.color, align: mark.align, bold: mark.bold, font: mark.font };
+    return { id, kind: "symbol", box, natural, pose: { flip: mark.flip, turn: mark.turn } };
+  }
+  const node = nodes.find((item) => item.id === id);
+  if (!node) return null;
+  return { id, kind: "symbol", box: node, natural: SYMBOL_SIZE[node.symbol], pose: doc.poses?.[id] ?? {} };
+}
+
+function writePose(doc: MifaDocument, id: string, pose: { flip?: boolean; turn?: QuarterTurn }): MifaDocument {
+  const flip = pose.flip ? true : undefined;
+  const turn = pose.turn || undefined;
+  if (id.startsWith("icon:")) {
+    const key = id.slice(5);
+    const box = doc.icons?.[key];
+    if (!box) return doc;
+    const next = { ...box };
+    if (flip) next.flip = true;
+    else delete next.flip;
+    if (turn) next.turn = turn;
+    else delete next.turn;
+    return { ...doc, icons: { ...doc.icons, [key]: next } };
+  }
+  if (id.startsWith("mark-")) {
+    return {
+      ...doc,
+      marks: (doc.marks ?? []).map((mark) => {
+        if (mark.id !== id) return mark;
+        const next = { ...mark };
+        if (flip) next.flip = true;
+        else delete next.flip;
+        if (turn) next.turn = turn;
+        else delete next.turn;
+        return next;
+      }),
+    };
+  }
+  const poses = { ...(doc.poses ?? {}) };
+  if (!flip && !turn) delete poses[id];
+  else poses[id] = { ...(flip ? { flip } : {}), ...(turn ? { turn } : {}) };
+  return { ...doc, poses };
+}
+
+function sameValue<T>(values: T[]): T | null {
+  if (!values.length || values.some((value) => value !== values[0])) return null;
+  return values[0];
+}
+
+function innerSize(width: number, height: number, turn: QuarterTurn | undefined) {
+  return turn === 90 || turn === 270 ? { width: height, height: width } : { width, height };
+}
+
+function Posed({ width, height, pose, children }: { width: number; height: number; pose?: { flip?: boolean; turn?: QuarterTurn }; children: ReactNode }) {
+  const turn = pose?.turn ?? 0;
+  const inner = innerSize(width, height, turn);
+  if (!turn && !pose?.flip) return children;
+  return (
+    <div className="grid h-full w-full place-items-center">
+      <div style={{ width: inner.width, height: inner.height, transform: `rotate(${turn}deg) scaleX(${pose?.flip ? -1 : 1})` }}>{children}</div>
+    </div>
+  );
+}
+
+function SizeField({
+  value,
+  unit,
+  label,
+  onSmaller,
+  onLarger,
+  onValue,
+}: {
+  value: number | null;
+  unit: string;
+  label: string;
+  onSmaller: () => void;
+  onLarger: () => void;
+  onValue: (value: number) => void;
+}) {
+  const [draft, setDraft] = useState<string | null>(null);
+  const shown = draft ?? (value == null ? "" : String(value));
+
+  function commitDraft() {
+    const raw = draft;
+    setDraft(null);
+    if (raw == null) return;
+    const parsed = Number(raw);
+    if (!raw.trim() || !Number.isFinite(parsed)) return;
+    onValue(parsed);
+  }
+
+  return (
+    <>
+      <Tip label="Smaller">
+        <button
+          type="button"
+          aria-label="Smaller"
+          className="flex size-7 items-center justify-center rounded-md hover:bg-[#e8eaed]"
+          onMouseDown={(event) => event.preventDefault()}
+          onClick={() => {
+            setDraft(null);
+            onSmaller();
+          }}
+        >
+          <Minus className="size-3.5" />
+        </button>
+      </Tip>
+      <Tip label={label}>
+        <span className="flex h-7 items-center rounded-md px-0.5 hover:bg-[#e8eaed] focus-within:bg-white focus-within:ring-1 focus-within:ring-[#1b4f9c]">
+          <input
+            aria-label={label}
+            inputMode="numeric"
+            value={shown}
+            placeholder="—"
+            className="h-7 w-9 bg-transparent text-center text-[12px] font-medium tabular-nums outline-none"
+            onChange={(event) => setDraft(event.target.value)}
+            onFocus={(event) => event.currentTarget.select()}
+            onBlur={commitDraft}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") event.currentTarget.blur();
+              if (event.key === "Escape") setDraft(null);
+            }}
+          />
+          <span className="pr-1 text-[10px] text-[#5f6368]">{unit}</span>
+        </span>
+      </Tip>
+      <Tip label="Larger">
+        <button
+          type="button"
+          aria-label="Larger"
+          className="flex size-7 items-center justify-center rounded-md hover:bg-[#e8eaed]"
+          onMouseDown={(event) => event.preventDefault()}
+          onClick={() => {
+            setDraft(null);
+            onLarger();
+          }}
+        >
+          <Plus className="size-3.5" />
+        </button>
+      </Tip>
+    </>
+  );
+}
+
+function TextStyleBar({
+  size,
+  color,
+  align,
+  bold,
+  onSmaller,
+  onLarger,
+  onSize,
+  onAlign,
+  onBold,
+  onColor,
+}: {
+  size: number | null;
+  color: string;
+  align: TextAlign | null;
+  bold: boolean;
+  onSmaller: () => void;
+  onLarger: () => void;
+  onSize: (size: number) => void;
+  onAlign: (align: TextAlign) => void;
+  onBold: () => void;
+  onColor: (color: string) => void;
+}) {
+  const aligns: { id: TextAlign; label: string }[] = [
+    { id: "left", label: "Align left" },
+    { id: "center", label: "Align center" },
+    { id: "right", label: "Align right" },
+  ];
+  return (
+    <div className="absolute top-3 left-1/2 z-40 flex -translate-x-1/2 items-center gap-1 rounded-lg border border-[#d0d7de] bg-white p-1 shadow-sm">
+      <SizeField value={size} unit="px" label="Text size" onSmaller={onSmaller} onLarger={onLarger} onValue={onSize} />
+      <span className="mx-1 h-5 w-px bg-[#d0d7de]" />
+      {aligns.map((item) => (
+        <Tip key={item.id} label={item.label}>
+          <button
+            type="button"
+            aria-label={item.label}
+            aria-pressed={align === item.id}
+            className={cn("flex size-7 items-center justify-center rounded-md", align === item.id ? "bg-[#e8f0fe]" : "hover:bg-[#e8eaed]")}
+            onClick={() => onAlign(item.id)}
+          >
+            <AlignGlyph align={item.id} />
+          </button>
+        </Tip>
+      ))}
+      <Tip label="Bold">
+        <button type="button" aria-label="Bold" aria-pressed={bold} className={cn("flex size-7 items-center justify-center rounded-md text-sm font-bold", bold ? "bg-[#e8f0fe]" : "hover:bg-[#e8eaed]")} onClick={onBold}>
+          B
+        </button>
+      </Tip>
+      <span className="mx-1 h-5 w-px bg-[#d0d7de]" />
+      {LINE_COLORS.map((item) => (
+        <Tip key={item.id} label={item.label}>
+          <button
+            type="button"
+            aria-label={item.label}
+            aria-pressed={color === item.color}
+            className={cn("size-5 rounded-full border", color === item.color ? "border-[#1b4f9c] ring-2 ring-[#1b4f9c]" : "border-[#d0d7de]")}
+            style={{ background: item.color }}
+            onClick={() => onColor(item.color)}
+          />
+        </Tip>
+      ))}
+    </div>
+  );
+}
+
+function FlowNote({ sheet, hover, links }: { sheet: Sheet; hover: { id: string; label: string; flowIds: string[] }; links: SheetEdge[] }) {
+  const story = flowStory(sheet, hover.id, links);
+  const edge = sheet.edges.find((item) => item.id === hover.id);
+  const ends = new Set(
+    edge
+      ? [sheet.nodes.find((node) => node.id === edge.from)?.label, sheet.nodes.find((node) => node.id === edge.to)?.label].filter((label): label is string => Boolean(label))
+      : [hover.label],
+  );
+  const lineName = sheet.nodes.find((node) => node.kind === "line" && story.routes.some((route) => route.includes(node.label)))?.label;
+  const reached = lineName && !ends.has(lineName) ? lineName : "";
+  return (
+    <aside className="pointer-events-none absolute top-3 right-3 z-30 w-72 rounded-lg border border-[#d0d7de] bg-white p-3 shadow-sm" aria-live="polite">
+      <p className="text-sm font-medium text-[#202124]">{hover.label}</p>
+      {story.routes.map((route) => (
+        <p key={route.join("→")} className="mt-1 text-[13px] leading-5 text-[#3c4043]">
+          {route.map((step, index) => {
+            const previous = route[index - 1];
+            const marked = ends.has(step);
+            const link = Boolean(edge && previous && ends.has(step) && ends.has(previous));
+            return (
+              <span key={`${step}-${index}`}>
+                {index > 0 ? <span className={link ? "font-medium text-[#1b4f9c]" : undefined}> → </span> : null}
+                <span className={marked ? "rounded bg-[#d2e3fc] px-1 font-medium text-[#1b4f9c]" : undefined}>{step}</span>
+              </span>
+            );
+          })}
+        </p>
+      ))}
+      {reached ? <p className="mt-1 text-[12px] text-[#5f6368]">Material reaches {reached}.</p> : null}
+      {story.systems.length ? <p className="mt-1 text-[12px] text-[#5f6368]">Information from {story.systems.join(", ")}.</p> : null}
+    </aside>
+  );
+}
+
+function SymbolStyleBar({
+  size,
+  flipped,
+  locked,
+  onSmaller,
+  onLarger,
+  onSize,
+  onFlip,
+  onRotate,
+  onLock,
+}: {
+  size: number | null;
+  flipped: boolean;
+  locked: boolean | null;
+  onSmaller: () => void;
+  onLarger: () => void;
+  onSize: (size: number) => void;
+  onFlip: () => void;
+  onRotate: () => void;
+  onLock: () => void;
+}) {
+  return (
+    <div className="absolute top-3 left-1/2 z-40 flex -translate-x-1/2 items-center gap-1 rounded-lg border border-[#d0d7de] bg-white p-1 shadow-sm">
+      <SizeField value={size} unit="%" label="Symbol size" onSmaller={onSmaller} onLarger={onLarger} onValue={onSize} />
+      <span className="mx-1 h-5 w-px bg-[#d0d7de]" />
+      <Tip label="Flip horizontal">
+        <button type="button" aria-label="Flip horizontal" aria-pressed={flipped} className={cn("flex size-7 items-center justify-center rounded-md", flipped ? "bg-[#e8f0fe]" : "hover:bg-[#e8eaed]")} onClick={onFlip}>
+          <FlipHorizontal2 className="size-3.5" />
+        </button>
+      </Tip>
+      <Tip label="Rotate">
+        <button type="button" aria-label="Rotate" className="flex size-7 items-center justify-center rounded-md hover:bg-[#e8eaed]" onClick={onRotate}>
+          <RotateCw className="size-3.5" />
+        </button>
+      </Tip>
+      {locked === null ? null : (
+        <>
+          <span className="mx-1 h-5 w-px bg-[#d0d7de]" />
+          <Tip label={locked ? "Unlock to move this symbol" : "Lock to the center of the flow"}>
+            <button type="button" aria-label={locked ? "Unlock" : "Lock to center"} aria-pressed={locked} className={cn("flex size-7 items-center justify-center rounded-md", locked ? "bg-[#e8f0fe]" : "hover:bg-[#e8eaed]")} onClick={onLock}>
+              {locked ? <Lock className="size-3.5" /> : <LockOpen className="size-3.5" />}
+            </button>
+          </Tip>
+        </>
+      )}
+    </div>
+  );
+}
+
+function AlignGlyph({ align }: { align: TextAlign }) {
+  const rows = align === "left" ? [14, 10, 8] : align === "right" ? [10, 8, 6] : [10, 8, 6];
+  const start = align === "left" ? 2 : align === "right" ? 16 : 9;
+  return (
+    <svg width="18" height="12" viewBox="0 0 18 12" aria-hidden="true">
+      {rows.map((length, index) => {
+        const x1 = align === "right" ? start - length : align === "center" ? start - length / 2 : start;
+        return <line key={index} x1={x1} y1={2 + index * 4} x2={x1 + length} y2={2 + index * 4} stroke="#202124" strokeWidth="1.4" />;
+      })}
+    </svg>
   );
 }
 
@@ -1955,11 +3096,68 @@ function EdgePorts({ box, armed, onConnect }: { box: Box; armed: boolean; onConn
   );
 }
 
+function TextEditor({
+  name,
+  style,
+  onChange,
+  onFocus,
+  onBlur,
+}: {
+  name: string;
+  style: { color: string; textAlign: TextAlign; fontWeight: number; fontSize: number; lineHeight: number; fontFamily: string; whiteSpace: "pre" };
+  onChange: (value: string) => void;
+  onFocus: () => void;
+  onBlur: () => void;
+}) {
+  const ref = useRef<HTMLSpanElement>(null);
+  useEffect(() => {
+    const node = ref.current;
+    if (!node) return;
+    node.textContent = name;
+    node.focus();
+    const range = document.createRange();
+    range.selectNodeContents(node);
+    range.collapse(false);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    onFocus();
+  }, []);
+  return (
+    <span
+      ref={ref}
+      role="textbox"
+      aria-label="Text"
+      contentEditable
+      suppressContentEditableWarning
+      spellCheck={false}
+      onInput={(event) => onChange(event.currentTarget.textContent ?? "")}
+      onBlur={onBlur}
+      onKeyDown={(event) => {
+        if (event.key === "Enter") event.preventDefault();
+        if (event.key !== "Escape") return;
+        event.preventDefault();
+        event.currentTarget.blur();
+      }}
+      onPointerDown={(event) => event.stopPropagation()}
+      className="outline-none"
+      style={style}
+    />
+  );
+}
+
 function BasicShape({
   shape,
   width,
   height,
   name,
+  color,
+  align,
+  bold,
+  font,
+  fill,
+  border,
+  weight,
   editing,
   onChange,
   onFocus,
@@ -1969,36 +3167,131 @@ function BasicShape({
   width: number;
   height: number;
   name: string;
+  color?: string;
+  align?: TextAlign;
+  bold?: boolean;
+  font?: number;
+  fill?: string;
+  border?: string;
+  weight?: number;
   editing: boolean;
   onChange: (value: string) => void;
   onFocus: () => void;
   onBlur: () => void;
 }) {
   if (shape === "text") {
-    if (editing) {
-      return (
-        <textarea
-          autoFocus
-          aria-label="Text"
-          value={name}
-          onChange={(event) => onChange(event.target.value)}
-          onFocus={onFocus}
-          onBlur={onBlur}
-          onPointerDown={(event) => event.stopPropagation()}
-          className="h-full w-full resize-none bg-transparent px-1 text-center text-sm leading-8 text-[#202124] outline-none"
-        />
-      );
-    }
-    return <div className="flex h-full w-full items-center justify-center border border-dashed border-[#d0d7de] px-1 text-center text-sm text-[#202124]">{name || "Text"}</div>;
+    const fontSize = clampFont(font ?? 14);
+    const style = { color: color ?? "#202124", textAlign: align ?? "center", fontWeight: bold ? 700 : 400, fontSize, lineHeight: 1.25, fontFamily: "inherit", whiteSpace: "pre" } as const;
+    const justify = align === "left" ? "flex-start" : align === "right" ? "flex-end" : "center";
+    return (
+      <div className="flex h-full w-full items-center overflow-visible px-1" style={{ justifyContent: justify }}>
+        {editing ? (
+          <TextEditor name={name} style={style} onChange={onChange} onFocus={onFocus} onBlur={onBlur} />
+        ) : (
+          <span style={style}>{name || "Text"}</span>
+        )}
+      </div>
+    );
   }
+  const stroke = weight ?? 1;
+  const inset = stroke / 2;
+  const paint = fill === "none" ? "none" : (fill ?? "#ffffff");
+  const line = stroke <= 0 ? "none" : (border ?? "#202124");
   return (
     <svg width={width} height={height} aria-hidden="true">
       {shape === "ellipse" ? (
-        <ellipse cx={width / 2} cy={height / 2} rx={width / 2 - 1} ry={height / 2 - 1} fill="#fff" stroke="#202124" strokeWidth={1.5} />
+        <ellipse cx={width / 2} cy={height / 2} rx={Math.max(0, width / 2 - inset)} ry={Math.max(0, height / 2 - inset)} fill={paint} stroke={line} strokeWidth={stroke} />
       ) : (
-        <rect x={1} y={1} width={Math.max(0, width - 2)} height={Math.max(0, height - 2)} rx={2} fill="#fff" stroke="#202124" strokeWidth={1.5} />
+        <rect x={inset} y={inset} width={Math.max(0, width - stroke)} height={Math.max(0, height - stroke)} rx={2} fill={paint} stroke={line} strokeWidth={stroke} />
       )}
     </svg>
+  );
+}
+
+const SHAPE_FILLS = [{ id: "white", label: "White", color: "#ffffff" }, ...LINE_COLORS] as const;
+const SHAPE_WEIGHTS = [1, 2, 4] as const;
+
+function ShapeStyleBar({
+  fill,
+  border,
+  weight,
+  onFill,
+  onBorder,
+  onWeight,
+}: {
+  fill: string;
+  border: string;
+  weight: number | null;
+  onFill: (fill: string) => void;
+  onBorder: (border: string) => void;
+  onWeight: (weight: number) => void;
+}) {
+  return (
+    <div className="absolute top-3 left-1/2 z-40 flex -translate-x-1/2 items-center gap-1 rounded-lg border border-[#d0d7de] bg-white p-1 shadow-sm">
+      <span className="px-1 text-[11px] text-[#5f6368]">Fill</span>
+      <Tip label="No fill">
+        <button
+          type="button"
+          aria-label="No fill"
+          aria-pressed={fill === "none"}
+          className={cn("flex size-5 items-center justify-center rounded-full border text-[11px]", fill === "none" ? "border-[#1b4f9c] ring-2 ring-[#1b4f9c]" : "border-[#d0d7de]")}
+          onClick={() => onFill("none")}
+        >
+          ∅
+        </button>
+      </Tip>
+      {SHAPE_FILLS.map((item) => (
+        <Tip key={item.id} label={item.label}>
+          <button
+            type="button"
+            aria-label={`Fill ${item.label.toLowerCase()}`}
+            aria-pressed={fill === item.color}
+            className={cn("size-5 rounded-full border", fill === item.color ? "border-[#1b4f9c] ring-2 ring-[#1b4f9c]" : "border-[#d0d7de]")}
+            style={{ background: item.color }}
+            onClick={() => onFill(item.color)}
+          />
+        </Tip>
+      ))}
+      <span className="mx-1 h-5 w-px bg-[#d0d7de]" />
+      <span className="px-1 text-[11px] text-[#5f6368]">Border</span>
+      {LINE_COLORS.map((item) => (
+        <Tip key={item.id} label={item.label}>
+          <button
+            type="button"
+            aria-label={`Border ${item.label.toLowerCase()}`}
+            aria-pressed={border === item.color && weight !== 0}
+            className={cn("size-5 rounded-full border-2 bg-white", border === item.color && weight !== 0 ? "ring-2 ring-[#1b4f9c]" : "")}
+            style={{ borderColor: item.color }}
+            onClick={() => onBorder(item.color)}
+          />
+        </Tip>
+      ))}
+      <span className="mx-1 h-5 w-px bg-[#d0d7de]" />
+      <Tip label="No border">
+        <button
+          type="button"
+          aria-label="No border"
+          aria-pressed={weight === 0}
+          className={cn("flex h-7 items-center rounded-md px-1.5 text-[12px]", weight === 0 ? "bg-[#e8f0fe]" : "hover:bg-[#e8eaed]")}
+          onClick={() => onWeight(0)}
+        >
+          None
+        </button>
+      </Tip>
+      {SHAPE_WEIGHTS.map((item) => (
+        <Tip key={item} label={`Border ${item}px`}>
+          <button
+            type="button"
+            aria-label={`Border ${item}px`}
+            aria-pressed={weight === item}
+            className={cn("flex h-7 w-8 items-center justify-center rounded-md", weight === item ? "bg-[#e8f0fe]" : "hover:bg-[#e8eaed]")}
+            onClick={() => onWeight(item)}
+          >
+            <span className="w-4 rounded-full bg-[#202124]" style={{ height: item }} />
+          </button>
+        </Tip>
+      ))}
+    </div>
   );
 }
 
@@ -2034,8 +3327,41 @@ function ArrowGlyph({ mode, color }: { mode: ArrowEnds; color: string }) {
   );
 }
 
-function iconsOnLines(doc: MifaDocument, edges: SheetEdge[], nodeBox: (id: string) => SheetNode | null, lanes: Map<string, number>) {
-  const icons: { id: string; edgeId: string; art: SymbolArt; x: number; y: number; width: number; height: number }[] = [];
+function focusInTable(
+  sheet: { nodes: SheetNode[]; edges: SheetEdge[] },
+  icons: { id: string; edgeId: string }[],
+  nodeId: string | null,
+  edgeId: string | null,
+  flowId: string | null,
+) {
+  const connection = (edge: SheetEdge) => {
+    const from = sheet.nodes.find((node) => node.id === edge.from);
+    const to = sheet.nodes.find((node) => node.id === edge.to);
+    return { flows: edge.flowIds, column: from && to ? fieldForConnection(from.kind, to.kind, edge.kind) : null };
+  };
+  const node = nodeId ? sheet.nodes.find((item) => item.id === nodeId) : undefined;
+  if (node) return { flows: node.flowIds, column: fieldForNode(node.kind) };
+  if (nodeId?.startsWith("icon:")) {
+    const icon = icons.find((item) => item.id === nodeId);
+    const edge = icon && sheet.edges.find((item) => item.id === icon.edgeId);
+    if (edge) return connection(edge);
+  }
+  if (edgeId) {
+    const edge = sheet.edges.find((item) => item.id === edgeId);
+    if (edge) return connection(edge);
+  }
+  if (flowId) return { flows: [flowId], column: null };
+  return { flows: [] as string[], column: null };
+}
+
+function iconSeat(saved: { x: number; y: number; width: number; height: number; placed?: boolean } | undefined, seat: { x: number; y: number; width: number; height: number }) {
+  if (saved && saved.placed !== false) return saved;
+  if (!saved) return seat;
+  return { x: seat.x + (seat.width - saved.width) / 2, y: seat.y + (seat.height - saved.height) / 2, width: saved.width, height: saved.height };
+}
+
+function iconsOnLines(doc: MifaDocument, edges: SheetEdge[], nodeBox: (id: string) => SheetNode | null, lanes: Map<string, number>, page: SheetBox) {
+  const icons: { id: string; edgeId: string; art: SymbolArt; x: number; y: number; width: number; height: number; flip?: boolean; turn?: QuarterTurn }[] = [];
   for (const edge of edges) {
     const parts = edge.label
       .split(" · ")
@@ -2045,26 +3371,14 @@ function iconsOnLines(doc: MifaDocument, edges: SheetEdge[], nodeBox: (id: strin
     const from = nodeBox(edge.from);
     const to = nodeBox(edge.to);
     if (!from || !to) continue;
-    const route = edgeRoute(from, to, doc.bends?.[edge.id], lanes.get(edge.id) ?? 0);
-    const start = route.points[0];
-    const end = route.points[route.points.length - 1];
-    const horizontal = Math.abs(end.x - start.x) >= Math.abs(end.y - start.y);
-    const sized = parts.map((part) => {
+    const route = edgeRoute(from, to, doc.bends?.[edge.id], lanes.get(edge.id) ?? 0, page);
+    parts.forEach((part, index) => {
       const art = transportArtwork(part)!;
       const key = `${edge.id}::${part}`;
       const saved = doc.icons?.[key];
-      const natural = artBox(art);
-      return { art, key, saved, width: saved?.width ?? natural.width, height: saved?.height ?? natural.height };
+      const seat = iconSeat(saved, seatLineIcon(route.points, artBox(art), index, parts.length));
+      icons.push({ id: `icon:${key}`, edgeId: edge.id, art, x: seat.x, y: seat.y, width: seat.width, height: seat.height, ...(saved?.flip ? { flip: true } : {}), ...(saved?.turn ? { turn: saved.turn } : {}) });
     });
-    const gap = 8;
-    const total = sized.reduce((sum, item) => sum + (horizontal ? item.width : item.height), 0) + gap * Math.max(0, sized.length - 1);
-    let cursor = horizontal ? route.label.x - total / 2 : route.label.y - total / 2;
-    for (const item of sized) {
-      const x = item.saved ? item.saved.x : horizontal ? cursor : route.label.x - item.width - 12;
-      const y = item.saved ? item.saved.y : horizontal ? route.label.y - item.height - 12 : cursor;
-      cursor += (horizontal ? item.width : item.height) + gap;
-      icons.push({ id: `icon:${item.key}`, edgeId: edge.id, art: item.art, x, y, width: item.width, height: item.height });
-    }
   }
   return icons;
 }
@@ -2102,6 +3416,50 @@ function LineGlyph({ kind, title }: { kind: FlowKind; title?: string }) {
       <line x1="1" y1="6" x2="15" y2="6" stroke={style.stroke} strokeWidth="1.6" strokeDasharray={style.dash} />
       <path d="M13 2.5 L20 6 L13 9.5" fill="none" stroke={style.stroke} strokeWidth="1.6" />
     </svg>
+  );
+}
+
+const SHEET_EDGES = [
+  { id: "n", cursor: "ns-resize" },
+  { id: "s", cursor: "ns-resize" },
+  { id: "e", cursor: "ew-resize" },
+  { id: "w", cursor: "ew-resize" },
+  { id: "nw", cursor: "nwse-resize" },
+  { id: "ne", cursor: "nesw-resize" },
+  { id: "se", cursor: "nwse-resize" },
+  { id: "sw", cursor: "nesw-resize" },
+] as const;
+
+function SheetEdges({ zoom, onResizeStart }: { zoom: number; onResizeStart: (edge: string, event: ReactPointerEvent<HTMLDivElement>) => void }) {
+  const band = 10 / Math.max(zoom, 0.05);
+  const place: Record<(typeof SHEET_EDGES)[number]["id"], { left?: number; right?: number; top?: number; bottom?: number; width?: number; height?: number }> = {
+    n: { left: band, right: band, top: -band / 2, height: band },
+    s: { left: band, right: band, bottom: -band / 2, height: band },
+    e: { top: band, bottom: band, right: -band / 2, width: band },
+    w: { top: band, bottom: band, left: -band / 2, width: band },
+    nw: { left: -band / 2, top: -band / 2, width: band, height: band },
+    ne: { right: -band / 2, top: -band / 2, width: band, height: band },
+    se: { right: -band / 2, bottom: -band / 2, width: band, height: band },
+    sw: { left: -band / 2, bottom: -band / 2, width: band, height: band },
+  };
+  return (
+    <>
+      {SHEET_EDGES.map((edge) => (
+        <div
+          key={edge.id}
+          aria-label={`Extend the sheet ${edge.id}`}
+          title="Drag to extend the sheet"
+          className="absolute z-40 hover:bg-[#1b4f9c]/35"
+          style={{ ...place[edge.id], cursor: edge.cursor }}
+          onPointerDown={(event) => {
+            if (event.button !== 0) return;
+            event.stopPropagation();
+            event.preventDefault();
+            onResizeStart(edge.id, event);
+          }}
+        />
+      ))}
+    </>
   );
 }
 

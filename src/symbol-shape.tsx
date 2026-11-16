@@ -1,16 +1,48 @@
+import { useId } from "react";
 import type { SymbolId } from "./document";
 import { LINE_CAR } from "./line-car";
-import type { SymbolArt } from "./symbol-art";
+import { artBounds, type SymbolArt } from "./symbol-art";
 
 const ink = "#202124";
-const BODY_COLORS = ["#d80000", "#d80000", "#d80000", "#3ff200", "#3ff200", "#3ff200", "#009999", "#009999", "#009999", "#969696", "#969696", "#969696"];
+/** Sheet pixels. The same weight as a flow line, and it stays that weight when a symbol is resized. */
+const PEN = 1.7;
+/** Old production line, top to bottom: three red, three green, three teal, one grey, then the same again. */
+export const SEQUENCE_COLORS = ["#d80000", "#d80000", "#d80000", "#3ff200", "#3ff200", "#3ff200", "#009999", "#009999", "#009999", "#969696"];
+/** Old production line in batches, top to bottom, then the same five again. */
+export const BATCH_COLORS = ["#d80000", "#3ff200", "#666633", "#009999", "#969696"];
 const PART_FILL = { outline: "#000000", lamp: "#ffe500", wheel: "#000000", hub: "#7f99b2", window: "#ffffff" };
+
+export type LinePattern = "sequence" | "batch";
+
+export function linePattern(artwork?: string): LinePattern | null {
+  if (artwork === "process-production-line-in-batches") return "batch";
+  if (artwork === "process-production-line-in-sequences") return "sequence";
+  return null;
+}
+
+/** Rails and one car. The rails match the other symbols' line weight, and height never changes the car size. */
+export function productionLineMetrics(width: number) {
+  const left = PEN;
+  const right = PEN;
+  const gap = Math.max(0, width - left - right);
+  const carW = gap * 0.94;
+  const carH = carW * (LINE_CAR.height / LINE_CAR.width);
+  const pitch = carH * 1.12;
+  return { left, right, gap, carW, carH, pitch };
+}
+
+/** One copy of the old symbol: ten cars between the rails. */
+export function productionLineBox(width = 48) {
+  const { pitch } = productionLineMetrics(width);
+  return { width, height: Math.round(pitch * 10) };
+}
 
 export function SymbolShape({
   symbol,
   width,
   height,
   label,
+  pose,
   selected = false,
   armed = false,
 }: {
@@ -18,13 +50,25 @@ export function SymbolShape({
   width: number;
   height: number;
   label?: string;
+  pose?: { flip?: boolean; turn?: number };
   selected?: boolean;
   armed?: boolean;
 }) {
   const bodyBottom = label ? height - 22 : height - 2;
+  const turn = pose?.turn ?? 0;
+  const sideways = turn === 90 || turn === 270;
+  const glyphWidth = sideways ? bodyBottom : width;
+  const glyphHeight = sideways ? width : bodyBottom;
+  const flip = pose?.flip ? -1 : 1;
   return (
     <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`} className="overflow-visible">
-      <Glyph symbol={symbol} width={width} bottom={bodyBottom} />
+      {turn || pose?.flip ? (
+        <g transform={`translate(${width / 2} ${bodyBottom / 2}) rotate(${turn}) scale(${flip} 1) translate(${-glyphWidth / 2} ${-glyphHeight / 2})`}>
+          <Glyph symbol={symbol} width={glyphWidth} bottom={glyphHeight} />
+        </g>
+      ) : (
+        <Glyph symbol={symbol} width={width} bottom={bodyBottom} />
+      )}
       {label ? (
         <text
           x={width / 2}
@@ -55,14 +99,76 @@ export function SymbolShape({
   );
 }
 
+function sizedArrow(d: string, factor: number) {
+  if (!Number.isFinite(factor) || Math.abs(factor - 1) < 0.04) return d;
+  const nums = d.match(/-?\d+(?:\.\d+)?/g);
+  if (!nums || nums.length < 2) return d;
+  const originX = Number(nums[0]);
+  const originY = Number(nums[1]);
+  let index = 0;
+  return d.replace(/-?\d+(?:\.\d+)?/g, (token) => {
+    const value = Number(token);
+    const next = index % 2 === 0 ? originX + (value - originX) * factor : originY + (value - originY) * factor;
+    index += 1;
+    return String(Math.round(next * 10) / 10);
+  });
+}
+
+/** Six teeth, a little taller than the first short roof, and the count does not grow when the building does. */
+const SUPPLIER_TEETH = 6;
+const SUPPLIER_TOOTH_HEIGHT = 14;
+
+function trim(value: number) {
+  return Math.round(value * 10) / 10;
+}
+
+/** The same six sawteeth span the building. Extra width widens them. Extra height lengthens the walls. */
+function supplierRoof(width: number, height: number) {
+  const right = Math.max(0, width);
+  const bottom = Math.max(0, height);
+  const roof = Math.min(SUPPLIER_TOOTH_HEIGHT, bottom);
+  const tooth = right / SUPPLIER_TEETH;
+  const points = [`M 0 ${trim(roof)}`];
+  for (let index = 1; index <= SUPPLIER_TEETH; index += 1) {
+    const x = index * tooth;
+    points.push(`L ${trim(x)} 0`);
+    points.push(`L ${trim(x)} ${trim(roof)}`);
+  }
+  points.push(`L ${trim(right)} ${trim(bottom)}`);
+  points.push(`L 0 ${trim(bottom)}Z`);
+  return points.join("");
+}
+
 export function VectorArt({ art, width, height, selected = false }: { art: SymbolArt; width: number; height: number; selected?: boolean }) {
-  const outline = Math.max(art.width, art.height) * 0.02;
+  if (art.id === "process-supplier") {
+    return (
+      <svg width={width} height={height} viewBox={`0 0 ${Math.max(width, 1)} ${Math.max(height, 1)}`} className="overflow-visible">
+        <path d={supplierRoof(width, height)} fill="none" stroke="#000000" strokeWidth={PEN} strokeLinejoin="round" strokeLinecap="round" />
+        {selected ? <rect x={0} y={0} width={Math.max(0, width)} height={Math.max(0, height)} fill="none" stroke="#1b4f9c" strokeWidth={PEN} /> : null}
+      </svg>
+    );
+  }
+  const bounds = artBounds(art);
+  const unit = Math.min(width / Math.max(bounds.width, 1), height / Math.max(bounds.height, 1)) || 1;
+  const pen = PEN / unit;
+  const base = import.meta.env.BASE_URL;
   return (
-    <svg width={width} height={height} viewBox={`0 0 ${art.width} ${art.height}`} className="overflow-visible">
-      {art.paths.map((path, index) => (
-        <path key={index} d={path.d} fill={path.fill ?? "none"} stroke={path.stroke ?? "none"} strokeWidth={path.stroke ? path.width : undefined} strokeLinejoin="round" />
+    <svg width={width} height={height} viewBox={`${bounds.x} ${bounds.y} ${bounds.width} ${bounds.height}`} preserveAspectRatio="none" className="overflow-visible">
+      {art.images?.map((image, index) => (
+        <image key={`image-${index}`} href={`${base}${image.href}`} x={image.x} y={image.y} width={image.width} height={image.height} />
       ))}
-      {selected ? <rect x={outline / 2} y={outline / 2} width={Math.max(0, art.width - outline)} height={Math.max(0, art.height - outline)} fill="none" stroke="#1b4f9c" strokeWidth={outline} /> : null}
+      {art.paths.map((path, index) => (
+        <path
+          key={index}
+          d={path.arrow ? sizedArrow(path.d, pen / path.arrow) : path.d}
+          fill={path.fill ?? "none"}
+          stroke={path.stroke ?? "none"}
+          strokeWidth={path.stroke ? pen : undefined}
+          strokeLinejoin="round"
+          strokeLinecap="round"
+        />
+      ))}
+      {selected ? <rect x={bounds.x} y={bounds.y} width={bounds.width} height={bounds.height} fill="none" stroke="#1b4f9c" strokeWidth={pen} /> : null}
     </svg>
   );
 }
@@ -99,7 +205,7 @@ function Glyph({ symbol, width, bottom }: { symbol: SymbolId; width: number; bot
       </g>
     );
   }
-  if (symbol === "production") return <ProductionLine width={w} height={h} stroke={stroke} />;
+  if (symbol === "production") return <ProductionLine width={w} height={h} />;
   if (symbol === "it") {
     return (
       <g>
@@ -135,31 +241,61 @@ function Glyph({ symbol, width, bottom }: { symbol: SymbolId; width: number; bot
   );
 }
 
-function ProductionLine({ width, height }: { width: number; height: number; stroke: number }) {
-  const rail = Math.max(2, width * 0.15);
-  const gap = width - rail * 2;
-  const carW = gap * 0.72;
-  const carH = carW * (LINE_CAR.height / LINE_CAR.width);
-  const count = Math.max(1, Math.floor((height - 2) / (carH * 0.92)));
-  const pitch = height / count;
+export function ProductionLine({
+  width,
+  height,
+  pattern = "sequence",
+  frame = false,
+}: {
+  width: number;
+  height: number;
+  pattern?: LinePattern;
+  frame?: boolean;
+}) {
+  const clipId = useId().replace(/:/g, "");
+  const { left, right, gap, carW, carH, pitch } = productionLineMetrics(width);
+  const colors = pattern === "batch" ? BATCH_COLORS : SEQUENCE_COLORS;
+  const count = Math.max(1, Math.ceil(Math.max(height, 1) / Math.max(pitch, 1)));
+  const sx = carW / LINE_CAR.width;
+  const sy = carH / LINE_CAR.height;
   return (
     <g>
-      <rect x={0} y={0} width={rail} height={height} fill="#000" />
-      <rect x={width - rail} y={0} width={rail} height={height} fill="#000" />
-      {Array.from({ length: count }, (_, index) => {
-        const slotH = Math.min(carH, pitch - 1);
-        const slotW = slotH * (LINE_CAR.width / LINE_CAR.height);
-        const sx = slotW / LINE_CAR.width;
-        const sy = slotH / LINE_CAR.height;
-        return (
-          <g key={index} transform={`translate(${rail + (gap - slotW) / 2} ${pitch * index + (pitch - slotH) / 2}) scale(${sx} ${sy})`}>
+      <rect x={0} y={0} width={left} height={height} fill="#000" />
+      <rect x={width - right} y={0} width={right} height={height} fill="#000" />
+      <clipPath id={clipId}>
+        <rect x={0} y={0} width={width} height={height} />
+      </clipPath>
+      <g clipPath={`url(#${clipId})`}>
+        {Array.from({ length: count }, (_, index) => (
+          <g key={index} transform={`translate(${left + (gap - carW) / 2} ${pitch * index + (pitch - carH) / 2}) scale(${sx} ${sy})`}>
             {LINE_CAR.parts.map((part, partIndex) => (
-              <path key={partIndex} d={part.d} fill={part.role === "body" ? BODY_COLORS[index % BODY_COLORS.length] : PART_FILL[part.role]} />
+              <path key={partIndex} d={part.d} fill={part.role === "body" ? colors[index % colors.length] : PART_FILL[part.role]} />
             ))}
           </g>
-        );
-      })}
+        ))}
+      </g>
+      {frame ? (
+        <rect x={0.8} y={0.8} width={Math.max(0, width - 1.6)} height={Math.max(0, height - 1.6)} fill="none" stroke="#1b4f9c" strokeWidth={1.7} />
+      ) : null}
     </g>
+  );
+}
+
+export function ProductionLineArt({
+  width,
+  height,
+  pattern = "sequence",
+  frame = false,
+}: {
+  width: number;
+  height: number;
+  pattern?: LinePattern;
+  frame?: boolean;
+}) {
+  return (
+    <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`} className="overflow-visible">
+      <ProductionLine width={width} height={height} pattern={pattern} frame={frame} />
+    </svg>
   );
 }
 

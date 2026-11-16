@@ -1,5 +1,5 @@
 import * as XLSX from "xlsx";
-import { FLOW_KINDS, SYMBOLS, blankFlow, emptyProject, type DrawnLink, type Flow, type FlowKind, type LineBend, type MifaDocument, type ProjectInfo, type Side, type SymbolId } from "./document";
+import { FLOW_KINDS, SYMBOLS, blankFlow, canonicalizeSequencers, clampFont, emptyProject, type DrawnLink, type Flow, type FlowKind, type LineBend, type MifaDocument, type ProjectInfo, type SheetBox, type Side, type SymbolId } from "./document";
 import { ART_BY_ID } from "./symbol-art";
 
 export const FLOW_COLUMNS: { key: keyof Flow; header: string; short: string }[] = [
@@ -155,12 +155,18 @@ export function workbookToDocument(book: XLSX.WorkBook): MifaDocument {
   }
 
   const project = emptyProject();
+  const canvasRaw: Partial<SheetBox> = {};
   const projectSheet = book.Sheets.Project ?? book.Sheets.project;
   if (projectSheet) {
     for (const row of sheetRows(projectSheet)) {
       const field = norm(asText(row[0]));
       const match = PROJECT_FIELDS.find((item) => norm(item.header) === field || item.key.toLowerCase() === field);
       if (match) project[match.key] = asText(row[1]);
+      const size = Number(row[1]);
+      if (field === "canvas x" && Number.isFinite(size)) canvasRaw.x = size;
+      if (field === "canvas y" && Number.isFinite(size)) canvasRaw.y = size;
+      if (field === "canvas width" && Number.isFinite(size)) canvasRaw.width = size;
+      if (field === "canvas height" && Number.isFinite(size)) canvasRaw.height = size;
     }
   }
   if (!project.name) project.name = "Imported MIFA";
@@ -168,19 +174,28 @@ export function workbookToDocument(book: XLSX.WorkBook): MifaDocument {
   const positions: MifaDocument["positions"] = {};
   const glyphs: Record<string, SymbolId> = {};
   const sizes: NonNullable<MifaDocument["sizes"]> = {};
+  const poses: NonNullable<MifaDocument["poses"]> = {};
+  const locks: NonNullable<MifaDocument["locks"]> = {};
   const symbolIds = new Set<string>(SYMBOLS.map((item) => item.id));
   const layoutSheet = book.Sheets.Layout ?? book.Sheets.layout;
   if (layoutSheet) {
     for (const row of sheetRows(layoutSheet).slice(1)) {
       const id = asText(row[0]);
-      const x = Number(row[1]);
-      const y = Number(row[2]);
+      const xText = asText(row[1]);
+      const yText = asText(row[2]);
+      const x = Number(xText);
+      const y = Number(yText);
       const symbol = asText(row[3]);
-      if (id && Number.isFinite(x) && Number.isFinite(y)) positions[id] = { x, y };
+      if (id && xText !== "" && yText !== "" && Number.isFinite(x) && Number.isFinite(y)) positions[id] = { x, y };
       if (id && symbolIds.has(symbol)) glyphs[id] = symbol as SymbolId;
       const width = Number(row[4]);
       const height = Number(row[5]);
       if (id && Number.isFinite(width) && Number.isFinite(height) && width > 0 && height > 0) sizes[id] = { width, height };
+      const flip = asText(row[6]).toLowerCase() === "y";
+      const turn = Number(row[7]);
+      const quarter = turn === 90 || turn === 180 || turn === 270 ? turn : undefined;
+      if (id && (flip || quarter)) poses[id] = { ...(flip ? { flip: true as const } : {}), ...(quarter ? { turn: quarter } : {}) };
+      if (id && asText(row[8]).toLowerCase() === "y") locks[id] = true;
     }
   }
   const marks: MifaDocument["marks"] = [];
@@ -207,6 +222,15 @@ export function workbookToDocument(book: XLSX.WorkBook): MifaDocument {
           height: Number.isFinite(height) && height > 0 ? height : undefined,
           shape: shape === "text" || shape === "rectangle" || shape === "ellipse" ? shape : undefined,
           ...(artwork && ART_BY_ID[artwork] ? { artwork } : {}),
+          ...(asText(row[9]).toLowerCase() === "y" ? { flip: true as const } : {}),
+          ...(Number(row[10]) === 90 || Number(row[10]) === 180 || Number(row[10]) === 270 ? { turn: Number(row[10]) as 90 | 180 | 270 } : {}),
+          ...( /^#[0-9a-fA-F]{6}$/.test(asText(row[11])) ? { color: asText(row[11]).toLowerCase() } : {}),
+          ...(asText(row[12]) === "left" || asText(row[12]) === "right" ? { align: asText(row[12]) as "left" | "right" } : {}),
+          ...(asText(row[13]).toLowerCase() === "y" ? { bold: true as const } : {}),
+          ...(Number(row[14]) > 0 ? { font: clampFont(Number(row[14])) } : {}),
+          ...(asText(row[15]).toLowerCase() === "none" || /^#[0-9a-fA-F]{6}$/.test(asText(row[15])) ? { fill: asText(row[15]).toLowerCase() } : {}),
+          ...( /^#[0-9a-fA-F]{6}$/.test(asText(row[16])) ? { border: asText(row[16]).toLowerCase() } : {}),
+          ...(Number(row[17]) >= 0 && asText(row[17]) !== "" && Number(row[17]) !== 1 ? { weight: Number(row[17]) } : {}),
         });
       }
     }
@@ -222,7 +246,8 @@ export function workbookToDocument(book: XLSX.WorkBook): MifaDocument {
       const side = asText(row[4]);
       if (!id || !Number.isFinite(x) || !Number.isFinite(y)) continue;
       const bend: LineBend = bends[id] ?? { x: 0, y: 0 };
-      if (part === "corner") bend.corners = [...(bend.corners ?? []), { x, y }];
+      if (part === "shaped") bend.shaped = true;
+      else if (part === "corner") bend.corners = [...(bend.corners ?? []), { x, y }];
       else if ((part === "from" || part === "to") && (side === "n" || side === "e" || side === "s" || side === "w")) bend[part] = { side: side as Side, at: x };
       else {
         bend.x = x;
@@ -274,14 +299,32 @@ export function workbookToDocument(book: XLSX.WorkBook): MifaDocument {
       const y = Number(row[2]);
       const width = Number(row[3]);
       const height = Number(row[4]);
-      if (id && [x, y, width, height].every((value) => Number.isFinite(value)) && width > 0 && height > 0) icons[id] = { x, y, width, height };
+      if (id && [x, y, width, height].every((value) => Number.isFinite(value)) && width > 0 && height > 0) {
+        const turn = Number(row[6]);
+        const quarter = turn === 90 || turn === 180 || turn === 270 ? turn : undefined;
+        icons[id] = {
+          x,
+          y,
+          width,
+          height,
+          ...(asText(row[5]).toLowerCase() === "y" ? { flip: true as const } : {}),
+          ...(quarter ? { turn: quarter } : {}),
+          ...(asText(row[7]).toLowerCase() === "n" ? { placed: false as const } : {}),
+          ...(asText(row[7]).toLowerCase() === "y" ? { placed: true as const } : {}),
+        };
+      }
     }
   }
-  return { project, flows, positions, glyphs, marks, sizes, bends, strokes, links, stack, icons };
+  const canvas = typeof canvasRaw.width === "number" && typeof canvasRaw.height === "number" ? { x: canvasRaw.x ?? 0, y: canvasRaw.y ?? 0, width: canvasRaw.width, height: canvasRaw.height } : undefined;
+  return canonicalizeSequencers({ project, flows, positions, glyphs, marks, sizes, bends, strokes, links, stack, icons, poses, ...(Object.keys(locks).length ? { locks } : {}), ...(canvas ? { canvas } : {}) });
 }
 
 export function documentToWorkbook(doc: MifaDocument) {
-  const projectRows = [["Field", "Value"], ...PROJECT_FIELDS.map((field) => [field.header, doc.project[field.key]])];
+  const projectRows = [
+    ["Field", "Value"],
+    ...PROJECT_FIELDS.map((field) => [field.header, doc.project[field.key]]),
+    ...(doc.canvas ? [["Canvas x", doc.canvas.x], ["Canvas y", doc.canvas.y], ["Canvas width", doc.canvas.width], ["Canvas height", doc.canvas.height]] : []),
+  ];
   const flowRows = [
     FLOW_COLUMNS.map((column) => column.header),
     ...doc.flows.map((flow) =>
@@ -293,24 +336,26 @@ export function documentToWorkbook(doc: MifaDocument) {
     ),
   ];
   const layoutRows = [
-    ["Node", "X", "Y", "Symbol", "W", "H"],
-    ...[...new Set([...Object.keys(doc.positions), ...Object.keys(doc.sizes ?? {})])].map((id) => {
-      const point = doc.positions[id];
+    ["Node", "X", "Y", "Symbol", "W", "H", "Flip", "Turn", "Locked"],
+    ...[...new Set([...Object.keys(doc.positions), ...Object.keys(doc.sizes ?? {}), ...Object.keys(doc.poses ?? {}), ...Object.keys(doc.locks ?? {})])].map((id) => {
+      const point = doc.locks?.[id] ? undefined : doc.positions[id];
       const size = doc.sizes?.[id];
-      return [id, point?.x ?? "", point?.y ?? "", doc.glyphs?.[id] ?? "", size?.width ?? "", size?.height ?? ""];
+      const pose = doc.poses?.[id];
+      return [id, point?.x ?? "", point?.y ?? "", doc.glyphs?.[id] ?? "", size?.width ?? "", size?.height ?? "", pose?.flip ? "y" : "", pose?.turn ?? "", doc.locks?.[id] ? "y" : ""];
     }),
   ];
   const book = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(book, XLSX.utils.aoa_to_sheet(projectRows), "Project");
   XLSX.utils.book_append_sheet(book, XLSX.utils.aoa_to_sheet(flowRows), "Flows");
   const symbolRows = [
-    ["Id", "Name", "Symbol", "X", "Y", "W", "H", "Shape", "Artwork"],
-    ...(doc.marks ?? []).map((mark) => [mark.id, mark.name, mark.symbol, mark.x, mark.y, mark.width ?? "", mark.height ?? "", mark.shape ?? "", mark.artwork ?? ""]),
+    ["Id", "Name", "Symbol", "X", "Y", "W", "H", "Shape", "Artwork", "Flip", "Turn", "Color", "Align", "Bold", "Font", "Fill", "Border", "Weight"],
+    ...(doc.marks ?? []).map((mark) => [mark.id, mark.name, mark.symbol, mark.x, mark.y, mark.width ?? "", mark.height ?? "", mark.shape ?? "", mark.artwork ?? "", mark.flip ? "y" : "", mark.turn ?? "", mark.color ?? "", mark.align ?? "", mark.bold ? "y" : "", mark.font ?? "", mark.fill ?? "", mark.border ?? "", mark.weight ?? ""]),
   ];
   const routeRows = [
     ["Edge", "X", "Y", "Part", "Side"],
     ...Object.entries(doc.bends ?? {}).flatMap(([id, bend]) => [
       [id, bend.x, bend.y, "offset", ""],
+      ...(bend.shaped ? [[id, 0, 0, "shaped", ""]] : []),
       ...(bend.from ? [[id, bend.from.at, 0, "from", bend.from.side]] : []),
       ...(bend.to ? [[id, bend.to.at, 0, "to", bend.to.side]] : []),
       ...(bend.corners ?? []).map((corner) => [id, corner.x, corner.y, "corner", ""]),
@@ -328,7 +373,7 @@ export function documentToWorkbook(doc: MifaDocument) {
   XLSX.utils.book_append_sheet(book, XLSX.utils.aoa_to_sheet(routeRows), "Routes");
   XLSX.utils.book_append_sheet(book, XLSX.utils.aoa_to_sheet(strokeRows), "Strokes");
   XLSX.utils.book_append_sheet(book, XLSX.utils.aoa_to_sheet(linkRows), "Links");
-  const iconRows = [["Key", "X", "Y", "W", "H"], ...Object.entries(doc.icons ?? {}).map(([id, box]) => [id, box.x, box.y, box.width, box.height])];
+  const iconRows = [["Key", "X", "Y", "W", "H", "Flip", "Turn", "Placed"], ...Object.entries(doc.icons ?? {}).map(([id, box]) => [id, box.x, box.y, box.width, box.height, box.flip ? "y" : "", box.turn ?? "", box.placed === false ? "n" : box.placed ? "y" : ""])];
   XLSX.utils.book_append_sheet(book, XLSX.utils.aoa_to_sheet(stackRows), "Stack");
   XLSX.utils.book_append_sheet(book, XLSX.utils.aoa_to_sheet(iconRows), "Icons");
   return book;
