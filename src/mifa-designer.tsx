@@ -1,5 +1,6 @@
 import { ArchivePanel } from "./archive-panel";
 import { ARCHIVE_KEY, addFolder, addMifa, createArchive, openDocument, parseArchive, remember, removeFolder, removeMifa, renameFolder, restoreVersion, saveVersion, type Archive } from "./archive";
+import { adoptPublished, publishedLibrary } from "./published-library";
 import { linePattern, ProductionLineArt, productionLineBox, SymbolShape, VectorArt } from "./symbol-shape";
 import { Button, Input, Tip } from "./ui";
 import { cn } from "./cn";
@@ -127,7 +128,7 @@ function shareFromLocation(): { mode: "preview" | "edit"; doc: MifaDocument } | 
 export function MifaDesigner() {
   const [ready, setReady] = useState(false);
   const [history, setHistory] = useState<History>({ past: [], present: exampleDocument(), future: [] });
-  const [archive, setArchive] = useState<Archive>(() => createArchive(exampleDocument()));
+  const [archive, setArchive] = useState<Archive>(() => publishedLibrary());
   const archiveRef = useRef(archive);
   const [archiveOpen, setArchiveOpen] = useState(false);
   const [browseFolderId, setBrowseFolderId] = useState<string | null>(null);
@@ -248,7 +249,7 @@ export function MifaDesigner() {
     }
     const shared = shareFromLocation();
     sharedRef.current = Boolean(shared);
-    const next = stored ?? createArchive(legacy ?? exampleDocument());
+    const next = stored ? adoptPublished(stored) : legacy ? adoptPublished(createArchive(legacy)) : publishedLibrary();
     archiveRef.current = next;
     setArchive(next);
     setBrowseFolderId(next.openFolderId);

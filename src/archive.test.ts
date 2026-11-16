@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { addFolder, addMifa, createArchive, openDocument, parseArchive, remember, removeFolder, removeMifa, renameFolder, restoreVersion, saveVersion } from "./archive";
 import { emptyDocument } from "./document";
+import { adoptPublished, publishedLibrary } from "./published-library";
 
 describe("MIFA folders and versions", () => {
   it("keeps several MIFAs in a folder and a saved copy of each sheet", () => {
@@ -25,6 +26,24 @@ describe("MIFA folders and versions", () => {
     const roundTrip = parseArchive(JSON.parse(JSON.stringify(restored)));
     expect(roundTrip && openDocument(roundTrip).project.name).toBe("Outbound");
     expect(roundTrip?.folders[0].name).toBe("FACTORY KRAGUJEVAC");
+  });
+
+  it("ships FACTORY KRAGUJEVAC and adds it beside a library that does not have it yet", () => {
+    const published = publishedLibrary();
+    expect(published.folders.map((folder) => folder.name)).toEqual(["Factory", "FACTORY KRAGUJEVAC"]);
+    expect(openDocument(published).project.name).toBe("Inbound example");
+    const kragujevac = published.folders[1].mifas[0];
+    expect(kragujevac.document.project.name).toBe("Untitled MIFA");
+    expect(kragujevac.versions.map((version) => version.name)).toEqual(["Draft", "Untitled MIFA"]);
+    const local = createArchive(emptyDocument(), "Other plant");
+    local.folders[0].mifas[0].document.project.name = "Kept sheet";
+    const merged = adoptPublished(local);
+    expect(merged.openMifaId).toBe(local.openMifaId);
+    expect(merged.folders.map((folder) => folder.name)).toEqual(["Other plant", "Factory", "FACTORY KRAGUJEVAC"]);
+    expect(openDocument(merged).project.name).toBe("Kept sheet");
+    const again = adoptPublished(merged);
+    expect(again.folders).toHaveLength(3);
+    expect(again).toBe(merged);
   });
 
   it("leaves the last MIFA and the last folder in place", () => {
