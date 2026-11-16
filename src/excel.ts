@@ -1,6 +1,30 @@
 import * as XLSX from "xlsx";
-import { FLOW_KINDS, SYMBOLS, blankFlow, canonicalizeSequencers, clampFont, emptyProject, type DrawnLink, type Flow, type FlowKind, type LineBend, type MifaDocument, type ProjectInfo, type SheetBox, type Side, type SymbolId } from "./document";
+import { FLOW_KINDS, SYMBOLS, blankFlow, canonicalizeSequencers, clampFont, emptyProject, type DrawnLink, type Flow, type FlowKind, type LineBend, type MifaDocument, type ProjectInfo, type SheetBox, type Side, type SymbolId, type TextRun } from "./document";
 import { ART_BY_ID } from "./symbol-art";
+
+function readStoredRuns(value: string): TextRun[] | undefined {
+  if (!value.startsWith("[")) return undefined;
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!Array.isArray(parsed)) return undefined;
+    const runs: TextRun[] = [];
+    for (const item of parsed) {
+      if (!item || typeof item !== "object") continue;
+      const run = item as Partial<TextRun>;
+      if (typeof run.text !== "string" || !run.text) continue;
+      const color = typeof run.color === "string" && /^#[0-9a-fA-F]{6}$/.test(run.color) ? run.color.toLowerCase() : undefined;
+      runs.push({
+        text: run.text,
+        ...(run.bold === true ? { bold: true } : run.bold === false ? { bold: false } : {}),
+        ...(color ? { color } : {}),
+        ...(typeof run.font === "number" && run.font > 0 ? { font: clampFont(run.font) } : {}),
+      });
+    }
+    return runs.length ? runs : undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 export const FLOW_COLUMNS: { key: keyof Flow; header: string; short: string }[] = [
   { key: "flowNumber", header: "Flow number", short: "#" },
@@ -231,6 +255,10 @@ export function workbookToDocument(book: XLSX.WorkBook): MifaDocument {
           ...(asText(row[15]).toLowerCase() === "none" || /^#[0-9a-fA-F]{6}$/.test(asText(row[15])) ? { fill: asText(row[15]).toLowerCase() } : {}),
           ...( /^#[0-9a-fA-F]{6}$/.test(asText(row[16])) ? { border: asText(row[16]).toLowerCase() } : {}),
           ...(Number(row[17]) >= 0 && asText(row[17]) !== "" && Number(row[17]) !== 1 ? { weight: Number(row[17]) } : {}),
+          ...(() => {
+            const runs = readStoredRuns(asText(row[18]));
+            return runs ? { runs } : {};
+          })(),
         });
       }
     }
@@ -348,8 +376,8 @@ export function documentToWorkbook(doc: MifaDocument) {
   XLSX.utils.book_append_sheet(book, XLSX.utils.aoa_to_sheet(projectRows), "Project");
   XLSX.utils.book_append_sheet(book, XLSX.utils.aoa_to_sheet(flowRows), "Flows");
   const symbolRows = [
-    ["Id", "Name", "Symbol", "X", "Y", "W", "H", "Shape", "Artwork", "Flip", "Turn", "Color", "Align", "Bold", "Font", "Fill", "Border", "Weight"],
-    ...(doc.marks ?? []).map((mark) => [mark.id, mark.name, mark.symbol, mark.x, mark.y, mark.width ?? "", mark.height ?? "", mark.shape ?? "", mark.artwork ?? "", mark.flip ? "y" : "", mark.turn ?? "", mark.color ?? "", mark.align ?? "", mark.bold ? "y" : "", mark.font ?? "", mark.fill ?? "", mark.border ?? "", mark.weight ?? ""]),
+    ["Id", "Name", "Symbol", "X", "Y", "W", "H", "Shape", "Artwork", "Flip", "Turn", "Color", "Align", "Bold", "Font", "Fill", "Border", "Weight", "Runs"],
+    ...(doc.marks ?? []).map((mark) => [mark.id, mark.name, mark.symbol, mark.x, mark.y, mark.width ?? "", mark.height ?? "", mark.shape ?? "", mark.artwork ?? "", mark.flip ? "y" : "", mark.turn ?? "", mark.color ?? "", mark.align ?? "", mark.bold ? "y" : "", mark.font ?? "", mark.fill ?? "", mark.border ?? "", mark.weight ?? "", mark.runs?.length ? JSON.stringify(mark.runs) : ""]),
   ];
   const routeRows = [
     ["Edge", "X", "Y", "Part", "Side"],

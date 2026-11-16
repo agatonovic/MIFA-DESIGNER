@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { addFolder, addMifa, createArchive, openDocument, parseArchive, remember, removeFolder, removeMifa, renameFolder, restoreVersion, saveVersion } from "./archive";
 import { emptyDocument } from "./document";
-import { adoptPublished, publishedLibrary } from "./published-library";
+import { adoptPublished, applyShippedUpdates, publishedLibrary } from "./published-library";
 
 describe("MIFA folders and versions", () => {
   it("keeps several MIFAs in a folder and a saved copy of each sheet", () => {
@@ -37,7 +37,18 @@ describe("MIFA folders and versions", () => {
     expect(kragujevac.mifas[0].versions.map((version) => version.name)).toEqual(["Draft", "Untitled MIFA"]);
     const melfi = kragujevac.mifas[1].document;
     expect(melfi.marks?.some((mark) => mark.name === "NOLA")).toBe(true);
-    expect(melfi.marks).toHaveLength(15);
+    expect(melfi.marks?.some((mark) => mark.name === "SIT WAREHOUSE (MAF + MEP)")).toBe(true);
+    expect(melfi.marks).toHaveLength(84);
+    const stale = publishedLibrary();
+    const previous = stale.folders[1].mifas[1];
+    previous.document = { ...previous.document, marks: previous.document.marks?.slice(0, 2) };
+    const refreshed = applyShippedUpdates(stale, {});
+    expect(refreshed.archive.folders[1].mifas[1].document.marks).toHaveLength(84);
+    const kept = applyShippedUpdates(refreshed.archive, refreshed.seen);
+    kept.archive.folders[1].mifas[1].document.marks = kept.archive.folders[1].mifas[1].document.marks?.slice(0, 3);
+    const leftAlone = applyShippedUpdates(kept.archive, kept.seen);
+    expect(leftAlone.archive).toBe(kept.archive);
+    expect(leftAlone.archive.folders[1].mifas[1].document.marks).toHaveLength(3);
     const older = publishedLibrary();
     older.folders[1].mifas = older.folders[1].mifas.filter((mifa) => mifa.document.project.name !== "MIFA GA MELFI");
     const gained = adoptPublished(older);

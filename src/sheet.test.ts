@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { connectSymbols, linkNodes, omitSymbols, placeSymbol } from "./canvas";
-import { addLineCorner, arrange, arrowOnScreen, arrowSeat, arrowTowardScreen, bendFromCorner, bendFromMove, bindFlowLine, bindFlowSymbol, bindTarget, blankFlow, buildSheet, canonicalizeSequencers, centerPortsOnMove, dragLineCorner, edgeRoute, pinOpenRoutes, emptyDocument, exampleDocument, fieldForConnection, fieldForNode, boxForPercent, clampFont, flowStory, lockToCenter, movePlaced, nestHosts, nextQuarter, paintLayers, symbolPercent, parseMifaDocument, pathForFlows, previewPath, quarterBox, removeLineCorner, resizeBox, resizeSheet, scaledBox, scaledSymbol, seatLineIcon, slideLineEnd, straightenConnection, strokeAround, unlockNodes, type SheetNode } from "./document";
+import { addLineCorner, arrange, arrowOnScreen, arrowSeat, arrowTowardScreen, bendFromCorner, bendFromMove, bindFlowLine, bindFlowSymbol, bindTarget, blankFlow, buildSheet, canonicalizeSequencers, centerPortsOnMove, dragLineCorner, edgeRoute, pinOpenRoutes, emptyDocument, exampleDocument, fieldForConnection, fieldForNode, boxForPercent, clampFont, flowStory, lockToCenter, movePlaced, nestHosts, nextQuarter, paintLayers, orderedIds, containerOf, setLayerLock, symbolPercent, parseMifaDocument, pathForFlows, previewPath, quarterBox, removeLineCorner, placeTextFrame, rangeBold, resizeBox, resizeMembers, resizeSheet, runsText, scaleTextRange, styleTextRange, textFrameSize, textRuns, scaledBox, unionBox, scaledSymbol, seatLineIcon, slideLineEnd, straightenConnection, strokeAround, unlockNodes, type SheetNode } from "./document";
 import { documentToWorkbook, workbookToDocument } from "./excel";
 import { SYMBOL_ART, transportArtwork } from "./symbol-art";
-import { BATCH_COLORS, productionLineMetrics, SEQUENCE_COLORS } from "./symbol-shape";
+import { BATCH_COLORS, carriedCellStroke, productionLineMetrics, SEQUENCE_COLORS } from "./symbol-shape";
 
 describe("MIFA sheet built from the flow register", () => {
   const doc = exampleDocument();
@@ -715,7 +715,7 @@ describe("MIFA sheet built from the flow register", () => {
     expect(typed.height).toBeLessThan(28);
     expect(sameShape(typed, truck)).toBe(true);
     const tiny = scaledBox({ x: 0, y: 0, width: 40, height: 16 }, 4 / 5);
-    expect(tiny.width).toBeLessThan(32);
+    expect(tiny.width).toBe(32);
     expect(tiny.height).toBeLessThan(16);
     expect(sameShape(tiny, { width: 40, height: 16 })).toBe(true);
     const turned = quarterBox({ x: 100, y: 100, width: 80, height: 40 }, 0, 90);
@@ -760,6 +760,29 @@ describe("MIFA sheet built from the flow register", () => {
     expect(floor).toMatchObject({ width: 16, height: 16 });
     const symbol = resizeBox("se", { x: 0, y: 0, width: 80, height: 60 }, -100, -100, { minWidth: 8, minHeight: 8, ratio: 80 / 60 });
     expect(symbol).toMatchObject({ width: 8, height: 6 });
+    const letters = textRuns({ name: "NOLA", bold: true, color: "#c5221f", font: 23 });
+    expect(runsText(letters)).toBe("NOLA");
+    const measured = textFrameSize(letters, 23, (text, font) => ({ width: text.length * font * 0.6, height: font * 1.25 }));
+    expect(measured.height).toBe(Math.ceil(23 * 1.25));
+    const rows = textFrameSize([{ text: "ONE\nTWO" }], 14, (_text, font) => ({ width: 40, height: font * 1.25 }));
+    expect(rows.height).toBe(Math.ceil(14 * 1.25 * 2));
+    const partial = styleTextRange(letters, 1, 3, { bold: false });
+    expect(partial.map((run) => run.text).join("")).toBe("NOLA");
+    expect(partial[1]).toMatchObject({ text: "OL", bold: false });
+    expect(rangeBold(partial, 1, 3)).toBe(false);
+    expect(rangeBold(partial, 0, 1)).toBe(true);
+    expect(runsText(scaleTextRange(letters, 0, 2, 23, 2))).toBe("NOLA");
+    expect(placeTextFrame({ x: 0, y: 0, width: 200, height: 80 }, { width: 40, height: 20 }, "center")).toEqual({ x: 80, y: 30, width: 40, height: 20 });
+    const wide = resizeBox("e", { x: 16, y: 24, width: 80, height: 64 }, 48, 20, { minWidth: 8, minHeight: 8, ratio: 80 / 64 });
+    expect(wide).toMatchObject({ x: 16, y: 24, width: 128, height: 64 });
+    const members = { a: { x: 0, y: 0, width: 80, height: 80 }, b: { x: 80, y: 0, width: 80, height: 80 } };
+    const outline = unionBox(Object.values(members));
+    expect(outline).toEqual({ x: 0, y: 0, width: 160, height: 80 });
+    const stretched = resizeBox("e", outline!, 80, 24, { minWidth: 16, minHeight: 16 });
+    expect(resizeMembers(outline!, stretched, members)).toEqual({
+      a: { x: 0, y: 0, width: 120, height: 80 },
+      b: { x: 120, y: 0, width: 120, height: 80 },
+    });
     const free = resizeBox("se", { x: 0, y: 0, width: 80, height: 60 }, -100, -100);
     expect(free).toMatchObject({ width: 40, height: 40 });
     const saved = {
@@ -813,6 +836,20 @@ describe("MIFA sheet built from the flow register", () => {
     const saved = { ...emptyDocument(), flows: [blankFlow("1")], stack: behind };
     expect(workbookToDocument(documentToWorkbook(saved)).stack).toEqual(behind);
     expect(parseMifaDocument(JSON.parse(JSON.stringify(saved)))?.stack).toEqual(behind);
+    const paint = ["back", "middle", "front"];
+    expect(orderedIds(["front", "back", "middle"], paint)).toEqual(["back", "middle", "front"]);
+    const parent = containerOf([
+      { id: "supplier:1", x: 0, y: 0, width: 200, height: 120 },
+      { id: "mark-note", x: 20, y: 20, width: 40, height: 16 },
+      { id: "icon:line", x: 80, y: 40, width: 24, height: 16 },
+    ]);
+    expect(parent.get("mark-note")).toBe("supplier:1");
+    expect(parent.has("icon:line")).toBe(false);
+    expect(parent.has("supplier:1")).toBe(false);
+    const held = setLayerLock(emptyDocument(), ["mark-note"], true);
+    expect(held.fixed?.["mark-note"]).toBe(true);
+    expect(parseMifaDocument(JSON.parse(JSON.stringify(held)))?.fixed?.["mark-note"]).toBe(true);
+    expect(setLayerLock(held, ["mark-note"], false).fixed).toBeUndefined();
   });
 
   it("draws one line between the two symbols that were clicked", () => {
@@ -900,5 +937,20 @@ describe("MIFA sheet built from the flow register", () => {
     expect(SEQUENCE_COLORS.filter((color) => color === "#969696")).toHaveLength(1);
     expect(SEQUENCE_COLORS.slice(0, 3).every((color) => color === "#d80000")).toBe(true);
     expect(BATCH_COLORS).toEqual(["#d80000", "#3ff200", "#666633", "#009999", "#969696"]);
+  });
+});
+
+describe("forklift box stroke", () => {
+  it("uses the standalone small-box line weight on the boxes and leaves other symbols alone", () => {
+    const full = SYMBOL_ART.find((art) => art.id === "materials-forklift-sb-full");
+    const empty = SYMBOL_ART.find((art) => art.id === "materials-forklift-sb-empty");
+    const pallet = SYMBOL_ART.find((art) => art.id === "inventories-small-boxes-pallet-full");
+    const stock = SYMBOL_ART.find((art) => art.id === "inventories-controlled-inventory-small-boxes-full");
+    expect(full && empty && pallet && stock).toBeTruthy();
+    const stroke = carriedCellStroke(full!);
+    expect(stroke).toBeLessThan(full!.paths[0].width / 2);
+    expect(carriedCellStroke(empty!)).toBeGreaterThan((stroke ?? 0) * 0.9);
+    expect(carriedCellStroke(pallet!)).toBeNull();
+    expect(carriedCellStroke(stock!)).toBeNull();
   });
 });

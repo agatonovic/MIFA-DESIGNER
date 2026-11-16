@@ -1,6 +1,6 @@
 import { ArchivePanel } from "./archive-panel";
 import { ARCHIVE_KEY, addFolder, addMifa, createArchive, openDocument, parseArchive, remember, removeFolder, removeMifa, renameFolder, restoreVersion, saveVersion, type Archive } from "./archive";
-import { adoptPublished, publishedLibrary } from "./published-library";
+import { adoptPublished, applyShippedUpdates, publishedLibrary, readShippedRevisions, SHIPPED_KEY } from "./published-library";
 import { linePattern, ProductionLineArt, productionLineBox, SymbolShape, VectorArt } from "./symbol-shape";
 import { Button, Input, Tip } from "./ui";
 import { cn } from "./cn";
@@ -38,14 +38,27 @@ import {
   createId,
   boxForPercent,
   clampFont,
+  mergeRuns,
+  placeTextFrame,
+  rangeBold,
+  runsText,
+  scaleTextRange,
+  styleTextRange,
+  textFrameSize,
+  textRuns,
   fittedIconBox,
   nextQuarter,
   flowStory,
   nestHosts,
+  containerOf,
+  orderedIds,
+  setLayerLock,
   previewPath,
   quarterBox,
   resizeSheet,
   resizeBox,
+  resizeMembers,
+  unionBox,
   scaledBox,
   scaledSymbol,
   symbolPercent,
@@ -64,11 +77,12 @@ import {
   type SheetEdge,
   type SheetNode,
   type TextAlign,
+  type TextRun,
 } from "./document";
 import { downloadWorkbook, FLOW_COLUMNS, FLOW_GROUPS, readWorkbook } from "./excel";
 import type { LibraryItem } from "./library";
 import { ART_BY_ID, SYMBOL_ART, artBounds, artBox, transportArtwork, type SymbolArt } from "./symbol-art";
-import { Circle, Download, Eye, FlipHorizontal2, Folder, Link2, Lock, LockOpen, Minus, MousePointer2, PanelBottomClose, PanelBottomOpen, PenLine, Plus, Redo2, RotateCw, Shapes, Share2, Square, Trash2, Type, Undo2, Upload, X } from "lucide-react";
+import { ChevronDown, ChevronRight, Circle, Download, Eye, FlipHorizontal2, Folder, Layers, Link2, Lock, LockOpen, Minus, MousePointer2, PanelBottomClose, PanelBottomOpen, PenLine, Plus, Redo2, RotateCw, Shapes, Share2, Square, Trash2, Type, Undo2, Upload, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 
@@ -98,7 +112,7 @@ const LINE_COLORS = [
   { id: "blue", label: "Blue", color: "#1b4f9c" },
   { id: "gray", label: "Gray", color: "#5f6368" },
   { id: "red", label: "Red", color: "#c5221f" },
-  { id: "green", label: "Green", color: "#188038" },
+  { id: "green", label: "Green", color: "#00ff00" },
   { id: "orange", label: "Orange", color: "#e37400" },
 ] as const;
 
@@ -125,6 +139,66 @@ function shareFromLocation(): { mode: "preview" | "edit"; doc: MifaDocument } | 
   }
 }
 
+function measureGlyphs(text: string, font: number, bold: boolean) {
+  if (typeof document === "undefined") return { width: Math.max(8, text.length * font * 0.6), height: font * 1.25 };
+  const probe = document.createElement("span");
+  probe.textContent = text.length ? text : " ";
+  probe.style.position = "absolute";
+  probe.style.left = "-9999px";
+  probe.style.top = "0";
+  probe.style.whiteSpace = "pre";
+  probe.style.fontWeight = bold ? "700" : "400";
+  probe.style.fontSize = `${font}px`;
+  probe.style.lineHeight = "1.25";
+  probe.style.fontFamily = getComputedStyle(document.body).fontFamily || "sans-serif";
+  document.body.appendChild(probe);
+  const box = probe.getBoundingClientRect();
+  probe.remove();
+  return { width: box.width, height: box.height };
+}
+
+function packText(mark: Mark, runs: TextRun[]): Mark {
+  const merged = mergeRuns(runs);
+  const name = runsText(merged);
+  const next: Mark = { ...mark, name };
+  const first = merged[0];
+  const uniform = merged.length > 0 && merged.every((run) => run.bold === first?.bold && (run.color ?? "") === (first?.color ?? "") && (run.font ?? 0) === (first?.font ?? 0));
+  if (uniform) {
+    delete next.runs;
+    if (first?.bold === true) next.bold = true;
+    else if (first?.bold === false) delete next.bold;
+    if (first?.color) next.color = first.color;
+    if (first?.font) {
+      if (first.font === 14) delete next.font;
+      else next.font = first.font;
+    }
+  } else {
+    next.runs = merged;
+  }
+  return next;
+}
+
+function fittedTextMark(mark: Mark, handle = "") {
+  const packed = packText(mark, textRuns(mark));
+  const size = textFrameSize(textRuns(packed), packed.font ?? 14, measureGlyphs);
+  const origin = { x: mark.x, y: mark.y, width: mark.width ?? size.width, height: mark.height ?? size.height };
+  return { ...packed, ...placeTextFrame(origin, size, mark.align, handle) };
+}
+
+function scaledTextMark(mark: Mark, factor: number, slot: { x: number; y: number; width: number; height: number }) {
+  const font = clampFont((mark.font ?? 14) * factor);
+  const runs = textRuns(mark).map((run) => ({ ...run, font: clampFont((run.font ?? mark.font ?? 14) * factor) }));
+  const drafted = packText({ ...mark, font }, runs);
+  const size = textFrameSize(textRuns(drafted), drafted.font ?? 14, measureGlyphs);
+  return {
+    ...drafted,
+    x: Math.round(slot.x + (slot.width - size.width) / 2),
+    y: Math.round(slot.y + (slot.height - size.height) / 2),
+    width: size.width,
+    height: size.height,
+  };
+}
+
 export function MifaDesigner() {
   const [ready, setReady] = useState(false);
   const [history, setHistory] = useState<History>({ past: [], present: exampleDocument(), future: [] });
@@ -144,6 +218,8 @@ export function MifaDesigner() {
   const [selectedFlowId, setSelectedFlowId] = useState<string | null>(null);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [editingTextId, setEditingTextId] = useState<string | null>(null);
+  const [textRevision, setTextRevision] = useState(0);
+  const textRange = useRef<{ id: string; start: number; end: number } | null>(null);
   const [group, setGroup] = useState<string[]>([]);
   const [marquee, setMarquee] = useState<{ x: number; y: number; width: number; height: number } | null>(null);
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
@@ -153,6 +229,8 @@ export function MifaDesigner() {
   const [shareOpen, setShareOpen] = useState(false);
   const [shareLock, setShareLock] = useState(false);
   const [libraryOpen, setLibraryOpen] = useState(false);
+  const [layersOpen, setLayersOpen] = useState(false);
+  const [layerFolded, setLayerFolded] = useState<Record<string, boolean>>({});
   const [view, setView] = useState<View>({ zoom: 1, pan: { x: 32, y: 16 } });
   const [notice, setNotice] = useState("");
   const viewportRef = useRef<HTMLDivElement>(null);
@@ -177,6 +255,8 @@ export function MifaDesigner() {
     ratio?: number;
     minWidth: number;
     minHeight: number;
+    members?: Record<string, { x: number; y: number; width: number; height: number }>;
+    text?: { font: number; runs?: TextRun[] };
   } | null>(null);
   const nudgeRef = useRef<{
     origin: MifaDocument;
@@ -194,6 +274,8 @@ export function MifaDesigner() {
     offsetY: number;
     origin: MifaDocument;
     moved: boolean;
+    sheetX: number;
+    sheetY: number;
     width: number;
     height: number;
     starts?: Record<string, { x: number; y: number; width: number; height: number }>;
@@ -227,6 +309,22 @@ export function MifaDesigner() {
     })),
     ...lineIcons.map((icon) => ({ id: icon.id, x: icon.x, y: icon.y, width: icon.width, height: icon.height })),
   ];
+  const layerSections = buildLayerSections(
+    doc.flows,
+    sheet.nodes,
+    marks,
+    lineIcons.map((icon) => ({ id: icon.id, edgeId: icon.edgeId, name: icon.art.name })),
+    visibleEdges,
+    boxesRef.current,
+    [...layers.back, ...layers.front, ...lineIcons.map((icon) => icon.id)],
+  );
+  const groupedBoxes = group.length > 1 ? boxesRef.current.filter((box) => group.includes(box.id)) : [];
+  const groupOutline = groupedBoxes.length > 1 ? unionBox(groupedBoxes) : null;
+  const groupStretchOnly = groupedBoxes.length > 1 && groupedBoxes.every((box) => {
+    const node = sheet.nodes.find((item) => item.id === box.id);
+    const mark = marks.find((item) => item.id === box.id);
+    return node?.symbol === "production" || mark?.symbol === "production" || linePattern(mark?.artwork);
+  });
   const selectedEdge = visibleEdges.find((edge) => edge.id === selectedEdgeId) ?? null;
   const tableFocus = focusInTable(sheet, lineIcons, selectedNodeId, selectedEdgeId, selectedFlowId);
   tableCellRef.current = null;
@@ -249,7 +347,14 @@ export function MifaDesigner() {
     }
     const shared = shareFromLocation();
     sharedRef.current = Boolean(shared);
-    const next = stored ? adoptPublished(stored) : legacy ? adoptPublished(createArchive(legacy)) : publishedLibrary();
+    let next = stored ? adoptPublished(stored) : legacy ? adoptPublished(createArchive(legacy)) : publishedLibrary();
+    try {
+      const refreshed = applyShippedUpdates(next, readShippedRevisions(window.localStorage.getItem(SHIPPED_KEY)));
+      next = refreshed.archive;
+      window.localStorage.setItem(SHIPPED_KEY, JSON.stringify(refreshed.seen));
+    } catch {
+      /* keep the library that is already open */
+    }
     archiveRef.current = next;
     setArchive(next);
     setBrowseFolderId(next.openFolderId);
@@ -421,10 +526,11 @@ export function MifaDesigner() {
     setSelectedFlowId(null);
   };
   actions.current.dismiss = () => {
-    const cancelTool = Boolean(linkFrom || binding || armed || libraryOpen || tool !== "select");
+    const cancelTool = Boolean(linkFrom || binding || armed || libraryOpen || layersOpen || tool !== "select");
     setMenu(null);
     setDropAt(null);
     setLibraryOpen(false);
+    setLayersOpen(false);
     setLinkFrom(null);
     setBinding(null);
     setArmed(null);
@@ -437,7 +543,7 @@ export function MifaDesigner() {
     setSelectedFlowId(null);
   };
   actions.current.copy = () => {
-    const ids = group.length ? group : selectedNodeId ? [selectedNodeId] : [];
+    const ids = orderedIds(group.length ? group : selectedNodeId ? [selectedNodeId] : [], [...layers.back, ...layers.front, ...lineIcons.map((icon) => icon.id)]);
     const items = ids.map((id) => snapshotSymbol(doc, sheet.nodes, lineIcons, id)).filter((item): item is Mark => item !== null);
     if (!items.length) return false;
     clipboard.current = { items, pasteCount: 0 };
@@ -457,7 +563,7 @@ export function MifaDesigner() {
       return { ...item, id: createId("mark"), x: placed.x, y: placed.y };
     });
     commit((current) => ({ ...current, marks: [...(current.marks ?? []), ...copies] }));
-    setSelectedNodeId(copies[0]?.id ?? null);
+    setSelectedNodeId(copies.length === 1 ? copies[0].id : null);
     setGroup(copies.map((item) => item.id));
     setSelectedEdgeId(null);
     setSelectedFlowId(null);
@@ -467,7 +573,7 @@ export function MifaDesigner() {
   };
   actions.current.nudge = (dx: number, dy: number) => {
     if (mode !== "design" || editingTextId || binding || linkFrom || dragRef.current) return false;
-    const ids = (group.length ? group : selectedNodeId ? [selectedNodeId] : []).filter((id) => !doc.locks?.[id]);
+    const ids = (group.length ? group : selectedNodeId ? [selectedNodeId] : []).filter((id) => !doc.locks?.[id] && !doc.fixed?.[id]);
     if (!ids.length) return false;
     let burst = nudgeRef.current;
     if (!burst) {
@@ -623,6 +729,48 @@ export function MifaDesigner() {
         const dy = (event.clientY - resizing.y) / zoom;
         if (Math.hypot(dx, dy) > 2) resizing.moved = true;
         const box = fitBox(resizeBox(resizing.handle, resizing.box, dx, dy, { minWidth: resizing.minWidth, minHeight: resizing.minHeight, circle: resizing.circle, ratio: resizing.ratio }), pageRef.current);
+        if (resizing.members) {
+          const placed = resizeMembers(resizing.box, box, resizing.members);
+          const side = resizing.handle === "n" || resizing.handle === "e" || resizing.handle === "s" || resizing.handle === "w";
+          let present = applyMembers(resizing.origin, placed);
+          present = {
+            ...present,
+            marks: (present.marks ?? []).map((mark) => {
+              const from = resizing.members?.[mark.id];
+              const to = placed[mark.id];
+              if (!from || !to || mark.shape !== "text") return mark;
+              const origin = resizing.origin.marks?.find((item) => item.id === mark.id) ?? mark;
+              const sx = from.width > 0 ? to.width / from.width : 1;
+              const sy = from.height > 0 ? to.height / from.height : 1;
+              const factor = !side ? Math.max(sx, sy) : resizing.handle === "n" || resizing.handle === "s" ? sy : sx;
+              return scaledTextMark(origin, factor, to);
+            }),
+          };
+          setHistory((current) => ({ ...current, present }));
+          return;
+        }
+        if (resizing.text) {
+          const origin = resizing.origin.marks?.find((mark) => mark.id === resizing.id);
+          if (origin?.shape === "text") {
+            const sx = resizing.box.width > 0 ? box.width / resizing.box.width : 1;
+            const sy = resizing.box.height > 0 ? box.height / resizing.box.height : 1;
+            const side = resizing.handle === "n" || resizing.handle === "e" || resizing.handle === "s" || resizing.handle === "w";
+            const factor = !side ? Math.max(sx, sy) : resizing.handle === "n" || resizing.handle === "s" ? sy : sx;
+            const font = clampFont(resizing.text.font * factor);
+            const runs = (resizing.text.runs ?? textRuns(origin)).map((run) => ({ ...run, font: clampFont((run.font ?? resizing.text?.font ?? 14) * factor) }));
+            const drafted = packText({ ...origin, font }, runs);
+            const size = textFrameSize(textRuns(drafted), drafted.font ?? 14, measureGlyphs);
+            const frame = placeTextFrame(resizing.box, size, origin.align, resizing.handle);
+            setHistory((current) => ({
+              ...current,
+              present: {
+                ...resizing.origin,
+                marks: (resizing.origin.marks ?? []).map((mark) => (mark.id === origin.id ? { ...drafted, ...frame } : mark)),
+              },
+            }));
+            return;
+          }
+        }
         setHistory((current) => ({ ...current, present: applyBox(current.present, resizing.id, box) }));
         return;
       }
@@ -732,6 +880,22 @@ export function MifaDesigner() {
       window.removeEventListener("pointerup", onUp);
     };
   }, [ready, mode]);
+
+  useEffect(() => {
+    if (!ready) return;
+    const marks = doc.marks ?? [];
+    let changed = false;
+    const next = marks.map((mark) => {
+      if (mark.shape !== "text") return mark;
+      const fitted = fittedTextMark(mark);
+      const close = (left: number, right: number) => Math.abs(left - right) <= 2;
+      if (close(fitted.x, mark.x) && close(fitted.y, mark.y) && close(fitted.width ?? 0, mark.width ?? 0) && close(fitted.height ?? 0, mark.height ?? 0)) return mark;
+      changed = true;
+      return fitted;
+    });
+    if (!changed) return;
+    setHistory((current) => ({ ...current, present: { ...current.present, marks: next } }));
+  }, [doc, ready]);
 
   function patchProject(key: keyof ProjectInfo, value: string) {
     setHistory((current) => ({
@@ -1178,10 +1342,10 @@ export function MifaDesigner() {
       setGroup([id]);
       setSelectedFlowId(sheet.nodes.find((node) => node.id === id)?.flowIds[0] ?? null);
     }
-    if (doc.locks?.[id]) return;
+    if (doc.locks?.[id] || doc.fixed?.[id]) return;
     const starts: Record<string, { x: number; y: number; width: number; height: number }> = {};
     for (const itemId of ids) {
-      if (doc.locks?.[itemId]) continue;
+      if (doc.locks?.[itemId] || doc.fixed?.[itemId]) continue;
       const found = boxesRef.current.find((item) => item.id === itemId);
       if (found) starts[itemId] = found;
     }
@@ -1212,7 +1376,7 @@ export function MifaDesigner() {
         ...(saved?.placed === true ? { placed: true as const } : {}),
       };
     }
-    dragRef.current = { id, offsetX: point.x - box.x, offsetY: point.y - box.y, origin: doc, moved: false, width: box.width, height: box.height, starts, iconStarts };
+    dragRef.current = { id, offsetX: point.x - box.x, offsetY: point.y - box.y, origin: doc, moved: false, sheetX: point.x, sheetY: point.y, width: box.width, height: box.height, starts, iconStarts };
   }
 
   function onNodePointerMove(event: ReactPointerEvent<HTMLDivElement>) {
@@ -1221,12 +1385,14 @@ export function MifaDesigner() {
     const point = sheetPoint(event);
     const primary = drag.starts[drag.id];
     if (!primary) return;
-    let dx = snap(point.x - drag.offsetX) - primary.x;
-    let dy = snap(point.y - drag.offsetY) - primary.y;
+    if (!drag.moved && Math.hypot(point.x - drag.sheetX, point.y - drag.sheetY) < 4) return;
+    let dx = snap(primary.x + point.x - drag.sheetX) - primary.x;
+    let dy = snap(primary.y + point.y - drag.sheetY) - primary.y;
     for (const box of Object.values(drag.starts)) {
       dx = Math.min(sheet.x + sheet.width - box.width - box.x, Math.max(sheet.x - box.x, dx));
       dy = Math.min(sheet.y + sheet.height - box.height - box.y, Math.max(sheet.y - box.y, dy));
     }
+    if (dx === 0 && dy === 0) return;
     drag.moved = true;
     const starts = drag.starts;
     setHistory((current) => ({
@@ -1312,13 +1478,13 @@ export function MifaDesigner() {
           tabIndex={0}
           aria-label={node.label}
           data-node={node.id}
-          title={doc.locks?.[node.id] ? "Locked at the center of the flow" : undefined}
+          title={doc.fixed?.[node.id] ? "Locked" : doc.locks?.[node.id] ? "Locked at the center of the flow" : undefined}
           className={cn(
             "pointer-events-auto absolute",
             mode === "design" && linkFrom && linkFrom !== node.id && "cursor-crosshair ring-2 ring-[#1b4f9c]",
             mode === "design" && binding && "cursor-crosshair",
             mode === "design" && (tool === "add" || tool === "text" || tool === "rectangle" || tool === "ellipse") && "cursor-crosshair",
-            mode === "design" && tool === "select" && !linkFrom && !binding && !doc.locks?.[node.id] && "cursor-grab active:cursor-grabbing",
+            mode === "design" && tool === "select" && !linkFrom && !binding && !doc.locks?.[node.id] && !doc.fixed?.[node.id] && "cursor-grab active:cursor-grabbing",
           )}
           style={{
             left: node.x,
@@ -1358,7 +1524,7 @@ export function MifaDesigner() {
           mode === "preview" ? "pointer-events-none absolute" : "pointer-events-auto absolute",
           mode === "design" && linkFrom && linkFrom !== mark.id && "cursor-crosshair ring-2 ring-[#1b4f9c]",
           mode === "design" && (tool === "add" || tool === "text" || tool === "rectangle" || tool === "ellipse") && "cursor-crosshair",
-          mode === "design" && tool === "select" && !linkFrom && "cursor-grab active:cursor-grabbing",
+          mode === "design" && tool === "select" && !linkFrom && !doc.fixed?.[mark.id] && "cursor-grab active:cursor-grabbing",
         )}
         style={{
           left: mark.x,
@@ -1441,13 +1607,15 @@ export function MifaDesigner() {
             fill={mark.fill}
             border={mark.border}
             weight={mark.weight}
+            runs={mark.runs}
+            revision={textRevision}
             editing={editingTextId === mark.id}
-            onChange={(value) => {
+            onChange={(runs) => {
               setHistory((current) => ({
                 ...current,
                 present: {
                   ...current.present,
-                  marks: (current.present.marks ?? []).map((item) => (item.id === mark.id ? { ...item, name: value } : item)),
+                  marks: (current.present.marks ?? []).map((item) => (item.id === mark.id ? fittedTextMark(packText(item, runs)) : item)),
                 },
               }));
             }}
@@ -1494,10 +1662,21 @@ export function MifaDesigner() {
   }
 
   function setTextSize(items: ObjectPick[], font: number) {
+    const range = activeTextRange();
+    if (range && items.length === 1 && items[0]?.id === range.id) {
+      const next = clampFont(font);
+      writeTextRuns(range.id, (mark) => styleTextRange(textRuns(mark), range.start, range.end, { font: next === 14 ? null : next }));
+      return;
+    }
     writeTextFont(items, () => font);
   }
 
   function stepTextSize(items: ObjectPick[], factor: number) {
+    const range = activeTextRange();
+    if (range && items.length === 1 && items[0]?.id === range.id) {
+      writeTextRuns(range.id, (mark) => scaleTextRange(textRuns(mark), range.start, range.end, mark.font ?? 14, factor));
+      return;
+    }
     writeTextFont(items, (item) => (item.font ?? 14) * factor);
   }
 
@@ -1507,11 +1686,12 @@ export function MifaDesigner() {
       ...current,
       marks: (current.marks ?? []).map((mark) => {
         const font = nextFont.get(mark.id);
-        if (font == null) return mark;
-        const next = { ...mark };
+        if (font == null || mark.shape !== "text") return mark;
+        const runs = textRuns(mark).map((run) => ({ ...run, font }));
+        const next = packText(mark, runs);
         if (font === 14) delete next.font;
         else next.font = font;
-        return next;
+        return fittedTextMark(next);
       }),
     }));
   }
@@ -1534,6 +1714,11 @@ export function MifaDesigner() {
         return writePose(seeded, item.id, { flip: !on, turn: item.pose.turn });
       }, current),
     );
+  }
+
+  function toggleLayerLock(ids: string[]) {
+    const locking = ids.some((id) => !doc.fixed?.[id]);
+    commit((current) => setLayerLock(current, ids, locking));
   }
 
   function holdSymbols(items: ObjectPick[]) {
@@ -1577,17 +1762,53 @@ export function MifaDesigner() {
     }));
   }
 
+  function activeTextRange() {
+    const range = textRange.current;
+    if (!range || range.id !== editingTextId || range.end <= range.start) return null;
+    return range;
+  }
+
+  function writeTextRuns(id: string, runsFor: (mark: Mark) => TextRun[]) {
+    setTextRevision((revision) => revision + 1);
+    commit((current) => ({
+      ...current,
+      marks: (current.marks ?? []).map((mark) => (mark.id === id && mark.shape === "text" ? fittedTextMark(packText(mark, runsFor(mark))) : mark)),
+    }));
+  }
+
   function paintText(patch: { color?: string; align?: TextAlign; bold?: boolean }) {
+    const range = activeTextRange();
+    if (range && patch.align === undefined && textItems.length === 1 && textItems[0]?.id === range.id) {
+      writeTextRuns(range.id, (mark) => {
+        const runs = textRuns(mark);
+        if (patch.bold !== undefined) return styleTextRange(runs, range.start, range.end, { bold: !rangeBold(runs, range.start, range.end) });
+        if (patch.color !== undefined) return styleTextRange(runs, range.start, range.end, { color: !patch.color || patch.color.toLowerCase() === "#202124" ? null : patch.color });
+        return runs;
+      });
+      return;
+    }
     const ids = new Set(textItems.map((item) => item.id));
     commit((current) => ({
       ...current,
       marks: (current.marks ?? []).map((mark) => {
-        if (!ids.has(mark.id)) return mark;
-        const next = { ...mark, ...patch };
+        if (!ids.has(mark.id) || mark.shape !== "text") return mark;
+        const styled = textRuns(mark).map((run) => {
+          const next = { ...run };
+          if (patch.bold !== undefined) {
+            if (patch.bold) next.bold = true;
+            else delete next.bold;
+          }
+          if (patch.color !== undefined) {
+            if (patch.color && patch.color.toLowerCase() !== "#202124") next.color = patch.color;
+            else delete next.color;
+          }
+          return next;
+        });
+        const next = packText({ ...mark, ...patch }, styled);
         if (!next.color || next.color.toLowerCase() === "#202124") delete next.color;
         if (!next.align || next.align === "center") delete next.align;
         if (!next.bold) delete next.bold;
-        return next;
+        return fittedTextMark(next);
       }),
     }));
   }
@@ -1689,6 +1910,7 @@ export function MifaDesigner() {
           tool={tool}
           armed={armed}
           libraryOpen={libraryOpen}
+          layersOpen={layersOpen}
           onSelect={() => {
             setTool("select");
             setLinkFrom(null);
@@ -1696,10 +1918,17 @@ export function MifaDesigner() {
             setMenu(null);
             setDropAt(null);
             setLibraryOpen(false);
+            setLayersOpen(false);
           }}
           onSymbols={() => {
             setDropAt(null);
+            setLayersOpen(false);
             setLibraryOpen((open) => !open);
+          }}
+          onLayers={() => {
+            setDropAt(null);
+            setLibraryOpen(false);
+            setLayersOpen((open) => !open);
           }}
           onBasic={(next) => {
             setTool(next);
@@ -1709,6 +1938,30 @@ export function MifaDesigner() {
             setLibraryOpen(false);
           }}
         />
+      ) : null}
+      {layersOpen && mode === "design" ? (
+        <div className="absolute top-0 bottom-0 left-[4.75rem] z-40 w-72 border-r border-[#d0d7de] bg-white shadow-lg">
+          <LayerPanel
+            sections={layerSections}
+            selected={group.length ? group : selectedNodeId ? [selectedNodeId] : []}
+            fixed={doc.fixed}
+            folded={layerFolded}
+            onToggleFold={(id) => setLayerFolded((current) => ({ ...current, [id]: !current[id] }))}
+            onSelect={(id, extend) => {
+              if (extend) toggleSelection(id);
+              else {
+                setSelectedNodeId(id);
+                setGroup([id]);
+                setSelectedEdgeId(null);
+                setSelectedFlowId(sheet.nodes.find((node) => node.id === id)?.flowIds[0] ?? null);
+                setEditingTextId(null);
+                setLinkFrom(null);
+              }
+            }}
+            onLock={(id) => toggleLayerLock([id])}
+            onClose={() => setLayersOpen(false)}
+          />
+        </div>
       ) : null}
       {libraryOpen && mode === "design" ? (
         <div className="absolute top-0 bottom-0 left-[4.75rem] z-40 w-[680px] border-r border-[#d0d7de] bg-white shadow-lg">
@@ -1746,7 +1999,7 @@ export function MifaDesigner() {
         style={{ touchAction: "none", cursor: spaceRef.current ? "grab" : undefined }}
         onPointerDown={onViewportPointerDown}
       >
-        <div style={{ transform: `translate(${view.pan.x + sheet.x * view.zoom}px, ${view.pan.y + sheet.y * view.zoom}px)`, transformOrigin: "0 0" }}>
+        <div className="absolute top-0 left-0" style={{ left: view.pan.x + sheet.x * view.zoom, top: view.pan.y + sheet.y * view.zoom }}>
         <div
           ref={sheetRef}
             className={cn(
@@ -1756,8 +2009,12 @@ export function MifaDesigner() {
           style={{
               width: sheetWidth,
               height: sheetHeight,
-              transform: `scale(${view.zoom})`,
-              transformOrigin: "0 0",
+              // Zooming in redraws the sheet so lines stay sharp. Zooming out uses a
+              // scale instead: the browser will not shrink text below its minimum size,
+              // so a zoom would leave the labels sitting on top of the symbols.
+              ...(view.zoom < 1
+                ? { transform: `scale(${view.zoom})`, transformOrigin: "0 0" }
+                : { zoom: view.zoom }),
             backgroundImage: "radial-gradient(#d5dbe3 1px, transparent 1px)",
             backgroundSize: "16px 16px",
           }}
@@ -1765,7 +2022,7 @@ export function MifaDesigner() {
             onContextMenu={(event) => mode === "design" && openMenu(event, null)}
         >
           <TitleBlock project={project} />
-            <div className="absolute inset-0" style={{ transform: `translate(${-sheet.x}px, ${-sheet.y}px)` }}>
+            <div className="absolute" style={{ left: -sheet.x, top: -sheet.y, width: sheetWidth, height: sheetHeight }}>
             <div className="pointer-events-none absolute inset-0">
               {layers.back.map((id) => renderPiece(id))}
             </div>
@@ -1807,14 +2064,14 @@ export function MifaDesigner() {
                       aria-label={`${edge.kind === "empty" ? "Empty return" : edge.kind === "information" ? "Information" : "Material"} line${edge.label ? `, ${edge.label}` : ""}`}
                       fill="none"
                       stroke="transparent"
-                      strokeWidth={16}
+                      strokeWidth={uiPx(view.zoom, 16)}
                       style={{ pointerEvents: "stroke", cursor: mode === "design" && tool === "select" ? "grab" : undefined }}
                       onPointerDown={(event) => onEdgePointerDown(event, edge.id)}
                       onContextMenu={(event) => mode === "design" && openEdgeMenu(event, edge.id, null)}
                     >
                       {mode === "design" ? <title>Right-click to add or remove a corner</title> : null}
                     </path>
-                    {selected ? <path d={drawn || route.path} fill="none" stroke="#1b4f9c" strokeWidth={6} opacity={0.2} style={{ pointerEvents: "none" }} /> : null}
+                    {selected ? <path d={drawn || route.path} fill="none" stroke="#1b4f9c" strokeWidth={uiPx(view.zoom, 6)} opacity={0.2} style={{ pointerEvents: "none" }} /> : null}
                     <path
                       d={drawn || route.path}
                     fill="none"
@@ -1832,8 +2089,9 @@ export function MifaDesigner() {
             <div className="pointer-events-none absolute inset-0 z-[2]">
             {layers.front.map((id) => renderPiece(id))}
             </div>
-            {mode === "design" && tool === "select" && selectedNodeId ? (
+            {mode === "design" && tool === "select" && selectedNodeId && !doc.fixed?.[selectedNodeId] && !doc.locks?.[selectedNodeId] ? (
               <ResizeHandles
+                zoom={view.zoom}
                 box={boxFor(sheet.nodes, marks, selectedNodeId, lineIcons)}
                 handles={
                   sheet.nodes.find((node) => node.id === selectedNodeId)?.symbol === "production" ||
@@ -1850,6 +2108,7 @@ export function MifaDesigner() {
                   const shaped = marks.find((mark) => mark.id === selectedNodeId);
                   const node = sheet.nodes.find((item) => item.id === selectedNodeId);
                   const basic = shaped?.shape === "rectangle" || shaped?.shape === "ellipse";
+                  const writing = shaped?.shape === "text";
                   const stretch = node?.symbol === "production" || shaped?.symbol === "production" || linePattern(shaped?.artwork);
                   resizeRef.current = {
                     id: selectedNodeId,
@@ -1860,9 +2119,10 @@ export function MifaDesigner() {
                     origin: doc,
                     moved: false,
                     circle: shaped?.shape === "ellipse",
-                    ratio: basic || stretch ? undefined : box.width / Math.max(box.height, 1),
-                    minWidth: basic ? 16 : stretch ? 40 : 8,
-                    minHeight: basic ? 16 : stretch ? 40 : 8,
+                    ratio: basic || stretch || writing ? undefined : box.width / Math.max(box.height, 1),
+                    minWidth: basic ? 16 : writing ? 8 : stretch ? 40 : 8,
+                    minHeight: basic ? 16 : writing ? 8 : stretch ? 40 : 8,
+                    ...(writing ? { text: { font: shaped.font ?? 14, runs: shaped.runs } } : {}),
                   };
                   event.currentTarget.setPointerCapture(event.pointerId);
                 }}
@@ -1872,21 +2132,41 @@ export function MifaDesigner() {
               ? boxesRef.current
                   .filter((item) => (item.id === selectedNodeId || item.id === linkFrom) && !item.id.startsWith("icon:"))
                   .map((item) => (
-                    <EdgePorts key={`port-${item.id}`} box={item} armed={Boolean(linkFrom) || selectedNodeId === item.id} onConnect={() => onPort(item.id)} />
+                    <EdgePorts key={`port-${item.id}`} box={item} zoom={view.zoom} armed={Boolean(linkFrom) || selectedNodeId === item.id} onConnect={() => onPort(item.id)} />
                   ))
               : null}
-            {group.length > 1 && boxesRef.current.some((box) => group.includes(box.id)) ? (
-              <div
-                className="pointer-events-none absolute z-20 border border-[#1b4f9c]"
-                style={(() => {
-                  const boxes = boxesRef.current.filter((box) => group.includes(box.id));
-                  const x = Math.min(...boxes.map((box) => box.x));
-                  const y = Math.min(...boxes.map((box) => box.y));
-                  const right = Math.max(...boxes.map((box) => box.x + box.width));
-                  const bottom = Math.max(...boxes.map((box) => box.y + box.height));
-                  return { left: x, top: y, width: right - x, height: bottom - y };
-                })()}
-              />
+            {groupOutline ? (
+              <>
+                <div className="pointer-events-none absolute z-20 border border-[#1b4f9c]" style={{ left: groupOutline.x, top: groupOutline.y, width: groupOutline.width, height: groupOutline.height }} />
+                {mode === "design" && tool === "select" ? (
+                  <ResizeHandles
+                    zoom={view.zoom}
+                    box={groupOutline}
+                    handles={groupStretchOnly ? ["n", "s"] : undefined}
+                    onResizeStart={(handle, event) => {
+                      const boxes = boxesRef.current.filter((box) => group.includes(box.id) && !doc.locks?.[box.id] && !doc.fixed?.[box.id]);
+                      const outline = unionBox(boxes);
+                      if (!outline || boxes.length < 2) return;
+                      event.stopPropagation();
+                      event.preventDefault();
+                      resizeRef.current = {
+                        id: boxes[0].id,
+                        handle,
+                        x: event.clientX,
+                        y: event.clientY,
+                        box: outline,
+                        origin: doc,
+                        moved: false,
+                        circle: false,
+                        minWidth: 16,
+                        minHeight: 16,
+                        members: Object.fromEntries(boxes.map((box) => [box.id, { x: box.x, y: box.y, width: box.width, height: box.height }])),
+                      };
+                      event.currentTarget.setPointerCapture(event.pointerId);
+                    }}
+                  />
+                ) : null}
+              </>
             ) : null}
             {marquee && (marquee.width > 0 || marquee.height > 0) ? (
               <div className="pointer-events-none absolute z-30 border border-[#1b4f9c] bg-[#1b4f9c]/10" style={{ left: marquee.x, top: marquee.y, width: marquee.width, height: marquee.height }} />
@@ -1907,20 +2187,24 @@ export function MifaDesigner() {
                   if (arrow === "end" || arrow === "both") heads.push({ key: "end", at: arrowSeat(end, route.points[route.points.length - 2] ?? start), index: -3, label: "Move line end" });
                   else if (selected) heads.push({ key: "end", at: end, index: -3, label: "Move line end" });
                   const corners = selected ? (route.corners.length ? route.corners : [route.handle]) : [];
+                  const grip = uiPx(view.zoom, selected ? 18 : 16);
+                  const mark = uiPx(view.zoom, selected ? 10 : 8);
+                  const hair = uiPx(view.zoom, 1);
                   return [
                     ...heads.map((head) => (
                       <div
                         key={`${edge.id}-${head.key}`}
                         aria-label={head.label}
                         title="Drag the arrow around the symbol to change the side it points to."
-                        className={cn(
-                          "absolute z-30 flex -translate-x-1/2 -translate-y-1/2 cursor-grab items-center justify-center active:cursor-grabbing",
-                          selected ? "size-7" : "size-6",
-                        )}
-                        style={{ left: head.at.x, top: head.at.y }}
+                        className="absolute z-30 flex -translate-x-1/2 -translate-y-1/2 cursor-grab items-center justify-center active:cursor-grabbing"
+                        style={{ left: head.at.x, top: head.at.y, width: grip, height: grip }}
                         onPointerDown={(event) => onEdgePointerDown(event, edge.id, head.index)}
                       >
-                        {selected ? <span className="size-3 rounded-sm border border-[#1b4f9c] bg-white" /> : <span className="size-4 rounded-full hover:bg-[#1b4f9c]/20" />}
+                        {selected ? (
+                          <span className="rounded-sm border border-[#1b4f9c] bg-white" style={{ width: mark, height: mark, borderWidth: hair }} />
+                        ) : (
+                          <span className="rounded-full hover:bg-[#1b4f9c]/20" style={{ width: mark, height: mark }} />
+                        )}
                       </div>
                     )),
                     ...corners.map((corner, index) => (
@@ -1928,8 +2212,8 @@ export function MifaDesigner() {
                         key={`${edge.id}-corner-${index}`}
                         aria-label="Move corner"
                         title={route.corners.length ? "Drag to move this corner. The end on the symbol moves with it. Right-click to remove it." : "Drag to bend this line. Right-click to add a corner."}
-                        className="absolute z-20 size-3 -translate-x-1/2 -translate-y-1/2 cursor-grab rounded-full border border-[#1b4f9c] bg-white active:cursor-grabbing"
-                        style={{ left: corner.x, top: corner.y }}
+                        className="absolute z-20 -translate-x-1/2 -translate-y-1/2 cursor-grab rounded-full border border-[#1b4f9c] bg-white active:cursor-grabbing"
+                        style={{ left: corner.x, top: corner.y, width: mark, height: mark, borderWidth: hair }}
                         onPointerDown={(event) => onEdgePointerDown(event, edge.id, index)}
                         onContextMenu={(event) => openEdgeMenu(event, edge.id, route.corners.length ? index : null)}
                       />
@@ -1943,7 +2227,7 @@ export function MifaDesigner() {
               role="button"
               tabIndex={0}
                 aria-label={icon.art.name}
-                className={cn("absolute z-[12]", mode === "design" && tool === "select" && "cursor-grab active:cursor-grabbing")}
+                className={cn("absolute z-[12]", mode === "design" && tool === "select" && !doc.fixed?.[icon.id] && "cursor-grab active:cursor-grabbing")}
                 style={{ left: icon.x, top: icon.y, width: icon.width, height: icon.height, opacity: opacityFor("edge", icon.edgeId) }}
                 onPointerDown={(event) => {
                   if (spaceRef.current || event.button !== 0) return;
@@ -2063,6 +2347,10 @@ export function MifaDesigner() {
         ) : null}
         {mode === "design" && !linkFrom && textItems.length ? (
           <TextStyleBar
+            onMouseDownCapture={() => {
+              const range = textSelection();
+              textRange.current = editingTextId && range && range.end > range.start ? { id: editingTextId, start: range.start, end: range.end } : null;
+            }}
             color={sameValue(textItems.map((item) => (item.color ?? "#202124").toLowerCase())) ?? ""}
             align={sameValue(textItems.map((item) => item.align ?? "center"))}
             bold={textItems.every((item) => item.bold)}
@@ -2331,6 +2619,17 @@ export function MifaDesigner() {
           {!menu.edgeId && menu.id && linkFrom && linkFrom !== menu.id ? <MenuItem label="Connect the line here" onClick={() => { const id = menu.id; setMenu(null); if (id) finishLink(linkFrom, id); }} /> : null}
           {!menu.edgeId && menu.id ? <MenuItem label="Draw a line" onClick={() => { const id = menu.id; setMenu(null); if (!id) return; setLinkFrom(id); setSelectedNodeId(id); setGroup([id]); setSelectedEdgeId(null); setTool("select"); }} /> : null}
           {!menu.edgeId && menu.id ? <MenuItem label="Copy" onClick={() => actions.current.copy()} /> : null}
+          {!menu.edgeId && menu.id ? (
+            <MenuItem
+              label={(group.includes(menu.id) && group.length > 1 ? group : [menu.id]).every((id) => doc.fixed?.[id]) ? "Unlock" : "Lock"}
+              onClick={() => {
+                const id = menu.id;
+                if (!id) return;
+                toggleLayerLock(group.includes(id) && group.length > 1 ? group : [id]);
+                setMenu(null);
+              }}
+            />
+          ) : null}
           {!menu.edgeId && canPaste ? <MenuItem label="Paste" onClick={() => actions.current.paste()} /> : null}
           {!menu.edgeId && menu.id ? <MenuItem label="Bring to front" onClick={() => menu.id && restack(menu.id, "front")} /> : null}
           {!menu.edgeId && menu.id ? <MenuItem label="Send to back" onClick={() => menu.id && restack(menu.id, "back")} /> : null}
@@ -2456,6 +2755,10 @@ function boxFor(
   };
 }
 
+function applyMembers(doc: MifaDocument, placed: Record<string, { x: number; y: number; width: number; height: number }>) {
+  return Object.entries(placed).reduce((next, [id, box]) => applyBox(next, id, box), doc);
+}
+
 function applyBox(doc: MifaDocument, id: string, box: { x: number; y: number; width: number; height: number }): MifaDocument {
   if (id.startsWith("icon:")) {
     const key = id.slice(5);
@@ -2474,16 +2777,25 @@ function applyBox(doc: MifaDocument, id: string, box: { x: number; y: number; wi
 
 const RESIZE_HANDLES = ["nw", "n", "ne", "e", "se", "s", "sw", "w"] as const;
 
+/** A length inside the zoomed sheet that stays the same size on screen. */
+function uiPx(zoom: number, px: number) {
+  return px / Math.max(zoom, 0.05);
+}
+
 function ResizeHandles({
   box,
   handles,
+  zoom,
   onResizeStart,
 }: {
   box: { x: number; y: number; width: number; height: number } | null;
   handles?: readonly (typeof RESIZE_HANDLES)[number][];
+  zoom: number;
   onResizeStart: (handle: string, event: ReactPointerEvent<HTMLDivElement>) => void;
 }) {
   if (!box) return null;
+  const size = uiPx(zoom, 10);
+  const border = uiPx(zoom, 1);
   const cursor: Record<(typeof RESIZE_HANDLES)[number], string> = {
     nw: "nwse-resize",
     se: "nwse-resize",
@@ -2510,8 +2822,8 @@ function ResizeHandles({
         <Tip key={handle} label="Resize">
           <div
             aria-label={`Resize ${handle}`}
-            className="absolute z-20 size-2.5 -translate-x-1/2 -translate-y-1/2 rounded-sm border border-[#1b4f9c] bg-white"
-            style={{ left: point[handle].left, top: point[handle].top, cursor: cursor[handle] }}
+            className="absolute z-20 -translate-x-1/2 -translate-y-1/2 rounded-sm border border-[#1b4f9c] bg-white"
+            style={{ left: point[handle].left, top: point[handle].top, width: size, height: size, borderWidth: border, cursor: cursor[handle] }}
             onPointerDown={(event) => onResizeStart(handle, event)}
           />
         </Tip>
@@ -2520,19 +2832,180 @@ function ResizeHandles({
   );
 }
 
+type LayerBranch = { id: string; name: string; children: LayerBranch[] };
+type LayerSection = { id: string; title: string; rows: LayerBranch[] };
+
+function pieceName(id: string, nodes: SheetNode[], marks: Mark[], icons: { id: string; name: string }[]) {
+  const node = nodes.find((item) => item.id === id);
+  if (node) return node.label || "Symbol";
+  const icon = icons.find((item) => item.id === id);
+  if (icon) return icon.name;
+  const mark = marks.find((item) => item.id === id);
+  if (!mark) return "Layer";
+  if (mark.name.trim()) return mark.name.trim();
+  if (mark.shape === "text") return "Text";
+  if (mark.shape === "ellipse") return "Circle";
+  if (mark.shape === "rectangle") return "Rectangle";
+  return mark.artwork ? "Symbol" : "Layer";
+}
+
+function flowTitle(flow: Flow) {
+  const number = flow.flowNumber.trim() || "—";
+  const detail = [flow.packaging, flow.supplier.trim()].filter(Boolean).join(" ");
+  return detail ? `Flow ${number} · ${detail}` : `Flow ${number}`;
+}
+
+function buildLayerSections(
+  flows: Flow[],
+  nodes: SheetNode[],
+  marks: Mark[],
+  icons: { id: string; edgeId: string; name: string }[],
+  edges: { id: string; flowIds: string[] }[],
+  boxes: { id: string; x: number; y: number; width: number; height: number }[],
+  paint: string[],
+): LayerSection[] {
+  const parent = containerOf(boxes);
+  const children = new Map<string, string[]>();
+  for (const [id, host] of parent) {
+    const list = children.get(host) ?? [];
+    list.push(id);
+    children.set(host, list);
+  }
+  const rank = new Map(paint.map((id, index) => [id, index]));
+  const frontFirst = (ids: string[]) => [...ids].sort((a, b) => (rank.get(b) ?? 0) - (rank.get(a) ?? 0));
+  const tree = (id: string): LayerBranch => ({
+    id,
+    name: pieceName(id, nodes, marks, icons),
+    children: frontFirst(children.get(id) ?? []).map(tree),
+  });
+  const claimed = new Set<string>();
+  const claim = (id: string) => {
+    if (claimed.has(id)) return;
+    claimed.add(id);
+    for (const child of children.get(id) ?? []) claim(child);
+  };
+  const sections: LayerSection[] = [];
+  for (const flow of flows) {
+    const roots = nodes.filter((node) => node.flowIds.includes(flow.id) && !parent.has(node.id) && !claimed.has(node.id)).map((node) => node.id);
+    const onLines = icons
+      .filter((icon) => edges.find((edge) => edge.id === icon.edgeId)?.flowIds.includes(flow.id) && !parent.has(icon.id) && !claimed.has(icon.id))
+      .map((icon) => icon.id);
+    const rows = [...roots, ...frontFirst(onLines)];
+    if (!rows.length) continue;
+    rows.forEach(claim);
+    sections.push({ id: flow.id, title: flowTitle(flow), rows: rows.map(tree) });
+  }
+  const loose = frontFirst(boxes.map((box) => box.id).filter((id) => !claimed.has(id) && !parent.has(id)));
+  if (loose.length) sections.push({ id: "sheet", title: "On the sheet", rows: loose.map(tree) });
+  return sections;
+}
+
+function LayerPanel({
+  sections,
+  selected,
+  fixed,
+  folded,
+  onToggleFold,
+  onSelect,
+  onLock,
+  onClose,
+}: {
+  sections: LayerSection[];
+  selected: string[];
+  fixed?: Record<string, true>;
+  folded: Record<string, boolean>;
+  onToggleFold: (id: string) => void;
+  onSelect: (id: string, extend: boolean) => void;
+  onLock: (id: string) => void;
+  onClose: () => void;
+}) {
+  return (
+    <div className="flex h-full min-h-0 flex-col">
+      <div className="flex h-11 shrink-0 items-center justify-between border-b border-[#d0d7de] px-3">
+        <p className="text-sm font-medium">Layers</p>
+        <button type="button" aria-label="Close layers" className="flex size-7 items-center justify-center rounded-md text-[#5f6368] hover:bg-[#e8eaed]" onClick={onClose}>
+          <X className="size-4" />
+        </button>
+      </div>
+      <div className="min-h-0 flex-1 overflow-auto py-1">
+        {sections.length ? (
+          sections.map((section) => (
+            <section key={section.id}>
+              <p className="px-3 pt-2 pb-1 text-[10px] font-semibold tracking-wide text-[#5f6368] uppercase">{section.title}</p>
+              {section.rows.map((row) => (
+                <LayerBranchRow key={row.id} row={row} depth={0} selected={selected} fixed={fixed} folded={folded} onToggleFold={onToggleFold} onSelect={onSelect} onLock={onLock} />
+              ))}
+            </section>
+          ))
+        ) : (
+          <p className="px-3 py-2 text-sm text-[#5f6368]">Nothing on the sheet yet.</p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function LayerBranchRow({
+  row,
+  depth,
+  selected,
+  fixed,
+  folded,
+  onToggleFold,
+  onSelect,
+  onLock,
+}: {
+  row: LayerBranch;
+  depth: number;
+  selected: string[];
+  fixed?: Record<string, true>;
+  folded: Record<string, boolean>;
+  onToggleFold: (id: string) => void;
+  onSelect: (id: string, extend: boolean) => void;
+  onLock: (id: string) => void;
+}) {
+  const open = !folded[row.id];
+  const on = selected.includes(row.id);
+  const locked = Boolean(fixed?.[row.id]);
+  return (
+    <>
+      <div className={cn("group flex items-center pr-1", on ? "bg-[#e8f0fe]" : "hover:bg-[#f4f6f8]")} style={{ paddingLeft: 8 + depth * 14 }}>
+        {row.children.length ? (
+          <button type="button" aria-label={open ? `Collapse ${row.name}` : `Expand ${row.name}`} className="flex size-5 shrink-0 items-center justify-center rounded text-[#5f6368]" onClick={() => onToggleFold(row.id)}>
+            {open ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
+          </button>
+        ) : (
+          <span className="size-5 shrink-0" />
+        )}
+        <button type="button" className={cn("min-w-0 flex-1 truncate py-1 text-left text-[13px]", on && "font-medium text-[#174ea6]")} onClick={(event) => onSelect(row.id, event.shiftKey || event.metaKey || event.ctrlKey)}>
+          {row.name}
+        </button>
+        <button type="button" aria-label={locked ? `Unlock ${row.name}` : `Lock ${row.name}`} aria-pressed={locked} className={cn("flex size-6 shrink-0 items-center justify-center rounded", locked ? "text-[#1b4f9c]" : "text-[#9aa0a6] hover:text-[#202124]")} onClick={() => onLock(row.id)}>
+          {locked ? <Lock className="size-3.5" /> : <LockOpen className="size-3.5" />}
+        </button>
+      </div>
+      {open ? row.children.map((child) => <LayerBranchRow key={child.id} row={child} depth={depth + 1} selected={selected} fixed={fixed} folded={folded} onToggleFold={onToggleFold} onSelect={onSelect} onLock={onLock} />) : null}
+    </>
+  );
+}
+
 function SymbolRail({
   tool,
   armed,
   libraryOpen,
+  layersOpen,
   onSelect,
   onSymbols,
+  onLayers,
   onBasic,
 }: {
   tool: Tool;
   armed: LibraryItem | null;
   libraryOpen: boolean;
+  layersOpen: boolean;
   onSelect: () => void;
   onSymbols: () => void;
+  onLayers: () => void;
   onBasic: (tool: "text" | "rectangle" | "ellipse") => void;
 }) {
   const hint =
@@ -2552,6 +3025,9 @@ function SymbolRail({
       </RailButton>
       <RailButton label="Symbols" active={libraryOpen} onClick={onSymbols}>
         <Shapes />
+      </RailButton>
+      <RailButton label="Layers" active={layersOpen} onClick={onLayers}>
+        <Layers />
       </RailButton>
       <RailButton label="Text" active={tool === "text"} onClick={() => onBasic("text")}>
         <Type />
@@ -2957,6 +3433,7 @@ function TextStyleBar({
   onAlign,
   onBold,
   onColor,
+  onMouseDownCapture,
 }: {
   size: number | null;
   color: string;
@@ -2968,6 +3445,7 @@ function TextStyleBar({
   onAlign: (align: TextAlign) => void;
   onBold: () => void;
   onColor: (color: string) => void;
+  onMouseDownCapture?: () => void;
 }) {
   const aligns: { id: TextAlign; label: string }[] = [
     { id: "left", label: "Align left" },
@@ -2975,7 +3453,7 @@ function TextStyleBar({
     { id: "right", label: "Align right" },
   ];
   return (
-    <div className="absolute top-3 left-1/2 z-40 flex -translate-x-1/2 items-center gap-1 rounded-lg border border-[#d0d7de] bg-white p-1 shadow-sm">
+    <div className="absolute top-3 left-1/2 z-40 flex -translate-x-1/2 items-center gap-1 rounded-lg border border-[#d0d7de] bg-white p-1 shadow-sm" onMouseDownCapture={onMouseDownCapture}>
       <SizeField value={size} unit="px" label="Text size" onSmaller={onSmaller} onLarger={onLarger} onValue={onSize} />
       <span className="mx-1 h-5 w-px bg-[#d0d7de]" />
       {aligns.map((item) => (
@@ -3178,26 +3656,28 @@ function LineStyleBar({
   );
 }
 
-function EdgePorts({ box, armed, onConnect }: { box: Box; armed: boolean; onConnect: () => void }) {
+function EdgePorts({ box, zoom, armed, onConnect }: { box: Box; zoom: number; armed: boolean; onConnect: () => void }) {
   const [hot, setHot] = useState<"n" | "e" | "s" | "w" | null>(null);
-  const insetX = box.width * 0.05;
-  const insetY = box.height * 0.05;
+  const gap = uiPx(zoom, 14);
+  const hit = uiPx(zoom, 18);
+  const dot = uiPx(zoom, armed ? 12 : 10);
+  const border = uiPx(zoom, 2);
   const sides = {
-    n: { strip: { left: box.x + insetX, top: box.y - 28, width: box.width - insetX * 2, height: 18 }, dot: { left: box.x + box.width / 2, top: box.y - 16 } },
-    s: { strip: { left: box.x + insetX, top: box.y + box.height + 10, width: box.width - insetX * 2, height: 18 }, dot: { left: box.x + box.width / 2, top: box.y + box.height + 16 } },
-    e: { strip: { left: box.x + box.width + 10, top: box.y + insetY, width: 18, height: box.height - insetY * 2 }, dot: { left: box.x + box.width + 16, top: box.y + box.height / 2 } },
-    w: { strip: { left: box.x - 28, top: box.y + insetY, width: 18, height: box.height - insetY * 2 }, dot: { left: box.x - 16, top: box.y + box.height / 2 } },
+    n: { left: box.x + box.width / 2, top: box.y - gap },
+    s: { left: box.x + box.width / 2, top: box.y + box.height + gap },
+    e: { left: box.x + box.width + gap, top: box.y + box.height / 2 },
+    w: { left: box.x - gap, top: box.y + box.height / 2 },
   } as const;
   return (
     <>
       {(Object.keys(sides) as (keyof typeof sides)[]).map((side) => {
-        const { strip, dot } = sides[side];
+        const point = sides[side];
         return (
           <Tip key={side} label="Draw a line">
           <div
             aria-label={`Connect ${side}`}
             className="absolute z-30 cursor-crosshair"
-            style={strip}
+            style={{ left: point.left - hit / 2, top: point.top - hit / 2, width: hit, height: hit }}
             onPointerEnter={() => setHot(side)}
             onPointerLeave={() => setHot((current) => (current === side ? null : current))}
             onPointerDown={(event) => {
@@ -3207,7 +3687,10 @@ function EdgePorts({ box, armed, onConnect }: { box: Box; armed: boolean; onConn
             }}
           >
             {armed || hot === side ? (
-              <span className={cn("absolute -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-[#1b4f9c] bg-white", armed ? "size-3.5" : "size-2.5")} style={{ left: dot.left - strip.left, top: dot.top - strip.top }} />
+              <span
+                className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 rounded-full border border-[#1b4f9c] bg-white"
+                style={{ width: dot, height: dot, borderWidth: border }}
+              />
             ) : null}
           </div>
           </Tip>
@@ -3217,33 +3700,182 @@ function EdgePorts({ box, armed, onConnect }: { box: Box; armed: boolean; onConn
   );
 }
 
+function runStyle(run: TextRun, base: { color: string; fontWeight: number; fontSize: number }) {
+  return {
+    color: run.color ?? base.color,
+    fontWeight: run.bold ? 700 : run.bold === false ? 400 : base.fontWeight,
+    fontSize: run.font ?? base.fontSize,
+  };
+}
+
+function readEditorRuns(root: HTMLElement, base: { bold?: boolean; color?: string; font?: number }): TextRun[] {
+  const runs: TextRun[] = [];
+  function push(text: string, style: { bold?: boolean; color?: string; font?: number }) {
+    if (!text) return;
+    const color = style.color && style.color.toLowerCase() !== base.color?.toLowerCase() ? style.color : undefined;
+    const font = style.font && style.font !== base.font ? style.font : undefined;
+    const bold = Boolean(style.bold) === Boolean(base.bold) ? undefined : Boolean(style.bold);
+    runs.push({ text, ...(bold === true ? { bold: true } : bold === false ? { bold: false } : {}), ...(color ? { color } : {}), ...(font ? { font } : {}) });
+  }
+  function walk(node: Node, style: { bold?: boolean; color?: string; font?: number }, leadingBreak: boolean) {
+    if (node.nodeType === Node.TEXT_NODE) {
+      push(node.textContent?.replace(/\u00a0/g, " ") ?? "", style);
+      return;
+    }
+    if (!(node instanceof HTMLElement)) return;
+    if (node.tagName === "BR") {
+      push("\n", style);
+      return;
+    }
+    const block = node.tagName === "DIV" || node.tagName === "P";
+    if (block && leadingBreak) push("\n", style);
+    const next = node.tagName === "SPAN"
+      ? {
+          bold: node.dataset.bold === "1" ? true : node.dataset.bold === "0" ? false : style.bold,
+          color: node.dataset.color || style.color,
+          font: node.dataset.font ? Number(node.dataset.font) : style.font,
+        }
+      : style;
+    node.childNodes.forEach((child, index) => walk(child, next, index > 0));
+  }
+  root.childNodes.forEach((child, index) => walk(child, base, index > 0));
+  return mergeRuns(runs);
+}
+
+function writeEditorRuns(root: HTMLElement, runs: TextRun[]) {
+  root.replaceChildren();
+  for (const run of runs) {
+    const parts = run.text.split("\n");
+    parts.forEach((part, index) => {
+      if (index > 0) root.append(document.createElement("br"));
+      if (!part) return;
+      const span = document.createElement("span");
+      if (run.bold) span.dataset.bold = "1";
+      if (run.color) span.dataset.color = run.color;
+      if (run.font) span.dataset.font = String(run.font);
+      if (run.bold) span.style.fontWeight = "700";
+      if (run.color) span.style.color = run.color;
+      if (run.font) span.style.fontSize = `${run.font}px`;
+      span.textContent = part;
+      root.append(span);
+    });
+  }
+}
+
+function editorOffset(root: HTMLElement, target: Node | null, offset: number) {
+  if (!target) return 0;
+  let count = 0;
+  function walk(node: Node): boolean {
+    if (node === target) {
+      if (node.nodeType === Node.TEXT_NODE) count += Math.min(offset, node.textContent?.length ?? 0);
+      else {
+        for (let index = 0; index < offset && index < node.childNodes.length; index += 1) walk(node.childNodes[index]);
+      }
+      return true;
+    }
+    if (node.nodeType === Node.TEXT_NODE) {
+      count += node.textContent?.length ?? 0;
+      return false;
+    }
+    if (node instanceof HTMLElement && node.tagName === "BR") {
+      count += 1;
+      return false;
+    }
+    for (const child of node.childNodes) {
+      if (walk(child)) return true;
+    }
+    return false;
+  }
+  walk(root);
+  return count;
+}
+
+function textSelection() {
+  const root = document.querySelector<HTMLElement>('[aria-label="Text"][contenteditable="true"]');
+  const selection = window.getSelection();
+  if (!root || !selection || selection.rangeCount === 0) return null;
+  if (!selection.anchorNode || !root.contains(selection.anchorNode) || !selection.focusNode || !root.contains(selection.focusNode)) return null;
+  const start = editorOffset(root, selection.anchorNode, selection.anchorOffset);
+  const end = editorOffset(root, selection.focusNode, selection.focusOffset);
+  return { start: Math.min(start, end), end: Math.max(start, end) };
+}
+
+function insertPlainText(editor: HTMLElement, text: string) {
+  const selection = window.getSelection();
+  if (!selection || selection.rangeCount === 0) return;
+  const range = selection.getRangeAt(0);
+  if (!editor.contains(range.startContainer)) return;
+  range.deleteContents();
+  const lines = text.replace(/\r\n/g, "\n").split("\n");
+  const fragment = document.createDocumentFragment();
+  lines.forEach((line, index) => {
+    if (index > 0) fragment.append(document.createElement("br"));
+    if (line) fragment.append(document.createTextNode(line));
+  });
+  const last = fragment.lastChild;
+  range.insertNode(fragment);
+  if (last) {
+    const next = document.createRange();
+    next.setStartAfter(last);
+    next.collapse(true);
+    selection.removeAllRanges();
+    selection.addRange(next);
+  }
+  editor.dispatchEvent(new InputEvent("input", { bubbles: true }));
+}
+
 function TextEditor({
-  name,
+  runs,
+  revision,
   style,
   onChange,
   onFocus,
   onBlur,
 }: {
-  name: string;
+  runs: TextRun[];
+  revision: number;
   style: { color: string; textAlign: TextAlign; fontWeight: number; fontSize: number; lineHeight: number; fontFamily: string; whiteSpace: "pre" };
-  onChange: (value: string) => void;
+  onChange: (runs: TextRun[]) => void;
   onFocus: () => void;
   onBlur: () => void;
 }) {
   const ref = useRef<HTMLSpanElement>(null);
+  const runsRef = useRef(runs);
+  runsRef.current = runs;
   useEffect(() => {
     const node = ref.current;
     if (!node) return;
-    node.textContent = name;
+    const caret = textSelection();
+    writeEditorRuns(node, runsRef.current);
     node.focus();
-    const range = document.createRange();
-    range.selectNodeContents(node);
-    range.collapse(false);
     const selection = window.getSelection();
-    selection?.removeAllRanges();
-    selection?.addRange(range);
+    if (!selection) return;
+    const range = document.createRange();
+    if (caret && caret.end > caret.start) {
+      const point = (at: number) => {
+        let left = at;
+        const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT);
+        let current = walker.nextNode();
+        while (current) {
+          const length = current.textContent?.length ?? 0;
+          if (left <= length) return { node: current, offset: left };
+          left -= length;
+          current = walker.nextNode();
+        }
+        return { node, offset: node.childNodes.length };
+      };
+      const from = point(caret.start);
+      const to = point(caret.end);
+      range.setStart(from.node, from.offset);
+      range.setEnd(to.node, to.offset);
+    } else {
+      range.selectNodeContents(node);
+      range.collapse(false);
+    }
+    selection.removeAllRanges();
+    selection.addRange(range);
     onFocus();
-  }, []);
+  }, [revision]);
   return (
     <span
       ref={ref}
@@ -3252,10 +3884,17 @@ function TextEditor({
       contentEditable
       suppressContentEditableWarning
       spellCheck={false}
-      onInput={(event) => onChange(event.currentTarget.textContent ?? "")}
+      onInput={(event) => onChange(readEditorRuns(event.currentTarget, { bold: style.fontWeight >= 700, color: style.color, font: style.fontSize }))}
+      onPaste={(event) => {
+        event.preventDefault();
+        insertPlainText(event.currentTarget, event.clipboardData.getData("text/plain"));
+      }}
       onBlur={onBlur}
       onKeyDown={(event) => {
-        if (event.key === "Enter") event.preventDefault();
+        if (event.key === "Enter" && !event.shiftKey) {
+          event.preventDefault();
+          insertPlainText(event.currentTarget, "\n");
+        }
         if (event.key !== "Escape") return;
         event.preventDefault();
         event.currentTarget.blur();
@@ -3279,6 +3918,8 @@ function BasicShape({
   fill,
   border,
   weight,
+  runs,
+  revision,
   editing,
   onChange,
   onFocus,
@@ -3295,21 +3936,30 @@ function BasicShape({
   fill?: string;
   border?: string;
   weight?: number;
+  runs?: TextRun[];
+  revision: number;
   editing: boolean;
-  onChange: (value: string) => void;
+  onChange: (runs: TextRun[]) => void;
   onFocus: () => void;
   onBlur: () => void;
 }) {
   if (shape === "text") {
     const fontSize = clampFont(font ?? 14);
-    const style = { color: color ?? "#202124", textAlign: align ?? "center", fontWeight: bold ? 700 : 400, fontSize, lineHeight: 1.25, fontFamily: "inherit", whiteSpace: "pre" } as const;
-    const justify = align === "left" ? "flex-start" : align === "right" ? "flex-end" : "center";
+    const base = { color: color ?? "#202124", fontWeight: bold ? 700 : 400, fontSize };
+    const style = { color: base.color, textAlign: align ?? "center", fontWeight: base.fontWeight, fontSize, lineHeight: 1.25, fontFamily: "inherit", whiteSpace: "pre" } as const;
+    const letters = textRuns({ name, bold, color, font, runs });
     return (
-      <div className="flex h-full w-full items-center overflow-visible px-1" style={{ justifyContent: justify }}>
+      <div className="h-full w-full overflow-visible" style={{ textAlign: style.textAlign, whiteSpace: "pre", lineHeight: 1.25 }}>
         {editing ? (
-          <TextEditor name={name} style={style} onChange={onChange} onFocus={onFocus} onBlur={onBlur} />
+          <TextEditor runs={letters} revision={revision} style={style} onChange={onChange} onFocus={onFocus} onBlur={onBlur} />
         ) : (
-          <span style={style}>{name || "Text"}</span>
+          <span style={style}>
+            {letters.map((run, index) => (
+              <span key={`${index}-${run.text}`} style={runStyle(run, base)}>
+                {run.text}
+              </span>
+            ))}
+          </span>
         )}
       </div>
     );

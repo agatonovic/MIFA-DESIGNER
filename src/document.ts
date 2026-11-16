@@ -85,6 +85,14 @@ export type QuarterTurn = 0 | 90 | 180 | 270;
 
 export type TextAlign = "left" | "center" | "right";
 
+/** One stretch of letters that share a style. A line break is a newline inside the text. */
+export type TextRun = {
+  text: string;
+  bold?: boolean;
+  color?: string;
+  font?: number;
+};
+
 export type Mark = {
   id: string;
   name: string;
@@ -103,8 +111,10 @@ export type Mark = {
   color?: string;
   align?: TextAlign;
   bold?: boolean;
-  /** Type size in pixels. The frame around the words stays as it is. */
+  /** Type size in pixels. The frame follows the letters. */
   font?: number;
+  /** Styled parts of the text. Omitted means the whole label uses the mark's style. */
+  runs?: TextRun[];
   /** Shape fill. Omitted is white. "none" leaves the inside empty. */
   fill?: string;
   /** Shape border color. Omitted is black. */
@@ -174,6 +184,8 @@ export type MifaDocument = {
   poses?: Record<string, { flip?: boolean; turn?: QuarterTurn }>;
   /** Symbols held at the layout center until they are unlocked. */
   locks?: Record<string, true>;
+  /** Held where they are. A locked layer does not move until it is unlocked. */
+  fixed?: Record<string, true>;
   /** Page origin and size. The origin moves when the sheet grows to the left or upward. */
   canvas?: SheetBox;
 };
@@ -198,6 +210,12 @@ export function paintLayers(ids: string[], stack?: StackOrder) {
   const pinned = (stack?.front ?? []).filter((id) => known.has(id));
   const placed = new Set([...back, ...pinned]);
   return { back, front: [...ids.filter((id) => !placed.has(id)), ...pinned] };
+}
+
+/** Back to front, so a pasted copy keeps the order on the sheet. */
+export function orderedIds(ids: string[], paint: string[]) {
+  const rank = new Map(paint.map((id, index) => [id, index]));
+  return [...ids].sort((a, b) => (rank.get(a) ?? 0) - (rank.get(b) ?? 0));
 }
 
 export function arrange(ids: string[], stack: StackOrder | undefined, id: string, where: "front" | "back"): StackOrder {
@@ -437,7 +455,7 @@ export function nextQuarter(turn: QuarterTurn | undefined): QuarterTurn {
   return (((turn ?? 0) + 90) % 360) as QuarterTurn;
 }
 
-/** Resize from a handle. A circle keeps both sides equal. A ratio keeps the drawing's proportions, down to the given minimum. */
+/** Resize from a handle. A side handle stretches that side. A corner keeps the drawing's proportions. A circle keeps both sides equal. */
 export function resizeBox(
   handle: string,
   origin: { x: number; y: number; width: number; height: number },
@@ -458,7 +476,8 @@ export function resizeBox(
     height = origin.height - dy;
     y = origin.y + dy;
   }
-  if (options?.ratio && options.ratio > 0 && !options.circle) {
+  const side = handle === "n" || handle === "e" || handle === "s" || handle === "w";
+  if (options?.ratio && options.ratio > 0 && !options.circle && !side) {
     const ratio = options.ratio;
     const alongWidth = handle === "e" || handle === "w";
     const alongHeight = handle === "n" || handle === "s";
@@ -517,6 +536,36 @@ export function resizeBox(
   return { x: snap(x), y: snap(y), width, height };
 }
 
+/** The outline around every selected box. */
+export function unionBox(boxes: { x: number; y: number; width: number; height: number }[]) {
+  if (!boxes.length) return null;
+  const x = Math.min(...boxes.map((box) => box.x));
+  const y = Math.min(...boxes.map((box) => box.y));
+  const right = Math.max(...boxes.map((box) => box.x + box.width));
+  const bottom = Math.max(...boxes.map((box) => box.y + box.height));
+  return { x, y, width: Math.max(0, right - x), height: Math.max(0, bottom - y) };
+}
+
+/** Move each selected box with the selection outline. A wider outline stretches each box across. A taller outline stretches each box down. */
+export function resizeMembers(
+  from: { x: number; y: number; width: number; height: number },
+  to: { x: number; y: number; width: number; height: number },
+  members: Record<string, { x: number; y: number; width: number; height: number }>,
+) {
+  const sx = from.width > 0 ? to.width / from.width : 1;
+  const sy = from.height > 0 ? to.height / from.height : 1;
+  const placed: Record<string, { x: number; y: number; width: number; height: number }> = {};
+  for (const [id, member] of Object.entries(members)) {
+    placed[id] = {
+      x: snap(to.x + (member.x - from.x) * sx),
+      y: snap(to.y + (member.y - from.y) * sy),
+      width: Math.max(8, snap(member.width * sx)),
+      height: Math.max(8, snap(member.height * sy)),
+    };
+  }
+  return placed;
+}
+
 /** Grow or shrink a box around its center, and keep it on the sheet. Both sides move together, so a wide symbol stays wide. */
 export function scaledBox(box: { x: number; y: number; width: number; height: number }, factor: number, page: SheetBox = sheetBox()) {
   return placeScaled(box, scaleToGrid(box.width, box.height, factor), page);
@@ -566,6 +615,160 @@ type SizeBox = { x: number; y: number; width: number; height: number };
 /** Keep a typed font size inside the range the sheet can show. */
 export function clampFont(value: number) {
   return Math.min(200, Math.max(8, Math.round(value)));
+}
+
+function sameRunStyle(a: TextRun, b: TextRun) {
+  return a.bold === b.bold && (a.color ?? "") === (b.color ?? "") && (a.font ?? 0) === (b.font ?? 0);
+}
+
+/** Join neighboring letters that look the same. */
+export function mergeRuns(runs: TextRun[]) {
+  const merged: TextRun[] = [];
+  for (const run of runs) {
+    if (!run.text) continue;
+    const previous = merged[merged.length - 1];
+    if (previous && sameRunStyle(previous, run)) previous.text += run.text;
+    else merged.push({ text: run.text, ...(run.bold === true ? { bold: true } : run.bold === false ? { bold: false } : {}), ...(run.color ? { color: run.color } : {}), ...(run.font ? { font: run.font } : {}) });
+  }
+  return merged.length ? merged : [{ text: "" }];
+}
+
+/** The letters as they are stored, including line breaks. */
+export function textRuns(mark: Pick<Mark, "name" | "bold" | "color" | "font" | "runs">): TextRun[] {
+  if (mark.runs?.length) return mergeRuns(mark.runs);
+  return [{ text: mark.name, ...(mark.bold ? { bold: true } : {}), ...(mark.color ? { color: mark.color } : {}), ...(mark.font ? { font: mark.font } : {}) }];
+}
+
+export function runsText(runs: TextRun[]) {
+  return runs.map((run) => run.text).join("");
+}
+
+/** Split runs at line breaks. An empty line stays, so a pasted list keeps its rows. */
+export function textLines(runs: TextRun[]) {
+  const lines: TextRun[][] = [[]];
+  for (const run of runs) {
+    const parts = run.text.split("\n");
+    parts.forEach((part, index) => {
+      if (index > 0) lines.push([]);
+      if (part) lines[lines.length - 1].push({ ...run, text: part });
+    });
+  }
+  return lines;
+}
+
+/** Width and height of the letters. `measure` reports one unwrapped run. */
+export function textFrameSize(
+  runs: TextRun[],
+  baseFont: number,
+  measure: (text: string, font: number, bold: boolean) => { width: number; height: number },
+) {
+  const lines = textLines(runs.length ? runs : [{ text: "" }]);
+  let width = 0;
+  let height = 0;
+  for (const line of lines) {
+    if (!line.length) {
+      height += measure(" ", baseFont, false).height;
+      continue;
+    }
+    let lineWidth = 0;
+    let lineHeight = 0;
+    for (const run of line) {
+      const font = clampFont(run.font ?? baseFont);
+      const box = measure(run.text, font, Boolean(run.bold));
+      lineWidth += box.width;
+      lineHeight = Math.max(lineHeight, box.height);
+    }
+    width = Math.max(width, lineWidth);
+    height += lineHeight;
+  }
+  return { width: Math.max(8, Math.ceil(width)), height: Math.max(8, Math.ceil(height)) };
+}
+
+/** Put the tight letter box on the frame, keeping the side the person is holding still. */
+export function placeTextFrame(
+  origin: { x: number; y: number; width: number; height: number },
+  size: { width: number; height: number },
+  align: TextAlign | undefined,
+  handle = "",
+) {
+  const width = size.width;
+  const height = size.height;
+  let x = origin.x;
+  let y = origin.y + (origin.height - height) / 2;
+  if (handle.includes("w")) x = origin.x + origin.width - width;
+  else if (handle.includes("e")) x = origin.x;
+  else if ((align ?? "center") === "right") x = origin.x + origin.width - width;
+  else if ((align ?? "center") === "center") x = origin.x + (origin.width - width) / 2;
+  if (handle.includes("n")) y = origin.y + origin.height - height;
+  else if (handle.includes("s")) y = origin.y;
+  return { x: Math.round(x), y: Math.round(y), width, height };
+}
+
+/** Style the characters between start and end. The other characters stay as they are. */
+export function styleTextRange(runs: TextRun[], start: number, end: number, patch: { bold?: boolean; color?: string | null; font?: number | null }) {
+  const from = Math.max(0, Math.min(start, end));
+  const to = Math.max(from, Math.max(start, end));
+  const next: TextRun[] = [];
+  let cursor = 0;
+  for (const run of runs) {
+    const runEnd = cursor + run.text.length;
+    if (runEnd <= from || cursor >= to || from === to) next.push(run);
+    else {
+      const left = Math.max(0, from - cursor);
+      const right = Math.min(run.text.length, to - cursor);
+      if (left > 0) next.push({ ...run, text: run.text.slice(0, left) });
+      const styled: TextRun = { ...run, text: run.text.slice(left, right) };
+      if (patch.bold !== undefined) styled.bold = patch.bold;
+      if (patch.color !== undefined) {
+        if (patch.color) styled.color = patch.color;
+        else delete styled.color;
+      }
+      if (patch.font !== undefined) {
+        if (patch.font) styled.font = patch.font;
+        else delete styled.font;
+      }
+      next.push(styled);
+      if (right < run.text.length) next.push({ ...run, text: run.text.slice(right) });
+    }
+    cursor = runEnd;
+  }
+  return mergeRuns(next);
+}
+
+/** Grow or shrink the type size of the selected characters, and leave the rest alone. */
+export function scaleTextRange(runs: TextRun[], start: number, end: number, baseFont: number, factor: number) {
+  const from = Math.max(0, Math.min(start, end));
+  const to = Math.max(from, Math.max(start, end));
+  if (from === to) return mergeRuns(runs);
+  const next: TextRun[] = [];
+  let cursor = 0;
+  for (const run of runs) {
+    const runEnd = cursor + run.text.length;
+    if (runEnd <= from || cursor >= to) next.push(run);
+    else {
+      const left = Math.max(0, from - cursor);
+      const right = Math.min(run.text.length, to - cursor);
+      if (left > 0) next.push({ ...run, text: run.text.slice(0, left) });
+      next.push({ ...run, text: run.text.slice(left, right), font: clampFont((run.font ?? baseFont) * factor) });
+      if (right < run.text.length) next.push({ ...run, text: run.text.slice(right) });
+    }
+    cursor = runEnd;
+  }
+  return mergeRuns(next);
+}
+
+/** True when every selected character is bold. */
+export function rangeBold(runs: TextRun[], start: number, end: number) {
+  const from = Math.min(start, end);
+  const to = Math.max(start, end);
+  if (from === to) return false;
+  let cursor = 0;
+  for (const run of runs) {
+    const runEnd = cursor + run.text.length;
+    if (runEnd > from && cursor < to && !run.bold) return false;
+    cursor = runEnd;
+  }
+  return true;
 }
 
 /** How large a symbol is, compared with its normal width. 100 is unchanged. */
@@ -1133,6 +1336,33 @@ export function nestHosts(boxes: NestBox[]) {
     if (host && host !== box.id) hosts.set(box.id, host);
   }
   return hosts;
+}
+
+/** The smallest object that contains each object's center. Line icons stay on their line. */
+export function containerOf(boxes: NestBox[]) {
+  const parent = new Map<string, string>();
+  for (const box of boxes) {
+    if (box.id.startsWith("icon:")) continue;
+    const cx = box.x + box.width / 2;
+    const cy = box.y + box.height / 2;
+    const area = box.width * box.height;
+    const holders = boxes
+      .filter((other) => other.id !== box.id && !other.id.startsWith("icon:") && other.width * other.height > area && boxContains(other, cx, cy))
+      .sort((a, b) => a.width * a.height - b.width * b.height);
+    const inner = holders[0];
+    if (inner) parent.set(box.id, inner.id);
+  }
+  return parent;
+}
+
+/** Lock keeps the current place. Unlock lets the layer move again. */
+export function setLayerLock(doc: MifaDocument, ids: string[], locked: boolean): MifaDocument {
+  const fixed = { ...(doc.fixed ?? {}) };
+  for (const id of ids) {
+    if (locked) fixed[id] = true;
+    else delete fixed[id];
+  }
+  return { ...doc, ...(Object.keys(fixed).length ? { fixed } : { fixed: undefined }) };
 }
 
 /** From the hovered symbol, along the material path to the production line, then back along the empty return. */
@@ -2149,6 +2379,7 @@ export function canonicalizeSequencers(doc: MifaDocument): MifaDocument {
   const icons = remap(doc.icons);
   const poses = remap(doc.poses);
   const locks = remap(doc.locks);
+  const fixed = remap(doc.fixed);
   const links = doc.links?.map((link) => {
     const from = rewrite(link.from);
     const to = rewrite(link.to);
@@ -2168,6 +2399,7 @@ export function canonicalizeSequencers(doc: MifaDocument): MifaDocument {
     icons === doc.icons &&
     poses === doc.poses &&
     locks === doc.locks &&
+    fixed === doc.fixed &&
     !linksChanged &&
     !stackChanged
   ) {
@@ -2183,6 +2415,7 @@ export function canonicalizeSequencers(doc: MifaDocument): MifaDocument {
     ...(icons ? { icons } : {}),
     ...(poses ? { poses } : {}),
     ...(locks ? { locks } : {}),
+    ...(fixed ? { fixed } : {}),
     ...(links ? { links } : {}),
     ...(stack ? { stack } : {}),
     ...(doc.canvas ? { canvas: doc.canvas } : {}),
@@ -2218,6 +2451,7 @@ export function parseMifaDocument(value: unknown): MifaDocument | null {
     icons: readIcons(doc.icons),
     poses: readPoses(doc.poses),
     locks: readLocks(doc.locks),
+    fixed: readLocks(doc.fixed),
     ...(readCanvas(doc.canvas) ? { canvas: readCanvas(doc.canvas) } : {}),
   });
 }
@@ -2328,6 +2562,24 @@ function readPort(value: unknown): LinePort | undefined {
   return { side: port.side, at: port.at };
 }
 
+function readRuns(value: unknown): TextRun[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const runs: TextRun[] = [];
+  for (const item of value) {
+    if (!item || typeof item !== "object") continue;
+    const run = item as Partial<TextRun>;
+    if (typeof run.text !== "string" || !run.text) continue;
+    const color = readPaint(run.color);
+    runs.push({
+      text: run.text,
+      ...(run.bold === true ? { bold: true } : run.bold === false ? { bold: false } : {}),
+      ...(color && color !== "none" ? { color } : {}),
+      ...(typeof run.font === "number" && run.font > 0 ? { font: clampFont(run.font) } : {}),
+    });
+  }
+  return runs.length ? runs : undefined;
+}
+
 function readPaint(value: unknown): string | undefined {
   if (value === "none") return "none";
   if (typeof value === "string" && /^#[0-9a-fA-F]{6}$/.test(value)) return value.toLowerCase();
@@ -2354,6 +2606,7 @@ function readMarks(value: unknown): Mark[] {
     const fill = readPaint(mark.fill);
     const border = readPaint(mark.border);
     const weight = typeof mark.weight === "number" && mark.weight >= 0 && mark.weight <= 8 ? mark.weight : undefined;
+    const runs = readRuns(mark.runs);
     marks.push({
       id: mark.id,
       name: mark.name,
@@ -2370,6 +2623,7 @@ function readMarks(value: unknown): Mark[] {
       ...(align ? { align } : {}),
       ...(mark.bold === true ? { bold: true } : {}),
       ...(typeof mark.font === "number" && mark.font > 0 ? { font: clampFont(mark.font) } : {}),
+      ...(runs ? { runs } : {}),
       ...(fill ? { fill } : {}),
       ...(border && border !== "none" ? { border } : {}),
       ...(weight !== undefined && weight !== 1 ? { weight } : {}),

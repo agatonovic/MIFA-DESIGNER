@@ -1,7 +1,7 @@
 import { useId } from "react";
 import type { SymbolId } from "./document";
 import { LINE_CAR } from "./line-car";
-import { artBounds, type SymbolArt } from "./symbol-art";
+import { artBounds, type ArtPath, type SymbolArt } from "./symbol-art";
 
 const ink = "#202124";
 /** Sheet pixels. The same weight as a flow line, and it stays that weight when a symbol is resized. */
@@ -145,6 +145,48 @@ function fittedPen(width: number, height: number) {
   return Math.min(PEN, Math.max(0.35, (shortSide / 28) * PEN));
 }
 
+/** Stroke divided by the short side of one cell on a standalone small-box pallet. */
+const PALLET_BOX_STROKE = 7372.3 / 87677.5;
+const FORKLIFT_BOXES = new Set(["materials-forklift-sb-full", "materials-forklift-sb-empty"]);
+
+function axisRect(d: string) {
+  const nums = d.match(/-?\d+(?:\.\d+)?/g);
+  if (!nums || nums.length < 8 || nums.length > 10) return null;
+  const xs: number[] = [];
+  const ys: number[] = [];
+  for (let index = 0; index + 1 < nums.length; index += 2) {
+    xs.push(Number(nums[index]));
+    ys.push(Number(nums[index + 1]));
+  }
+  const width = Math.max(...xs) - Math.min(...xs);
+  const height = Math.max(...ys) - Math.min(...ys);
+  return width > 0 && height > 0 ? { width, height } : null;
+}
+
+function isCarriedBox(art: SymbolArt, path: ArtPath) {
+  if (!FORKLIFT_BOXES.has(art.id)) return false;
+  if (!path.fill) return Boolean(path.stroke);
+  const rect = axisRect(path.d);
+  if (!rect) return false;
+  const bounds = artBounds(art);
+  const minor = Math.min(rect.width, rect.height);
+  const major = Math.max(rect.width, rect.height);
+  return minor / major >= 0.45 && minor <= Math.min(bounds.width, bounds.height) * 0.25;
+}
+
+/** Box lines on the forklift, in the drawing's own units. The truck keeps its own line weight. */
+export function carriedCellStroke(art: SymbolArt) {
+  if (!FORKLIFT_BOXES.has(art.id)) return null;
+  let short = 0;
+  for (const path of art.paths) {
+    if (!isCarriedBox(art, path) || !path.fill) continue;
+    const rect = axisRect(path.d);
+    if (!rect) continue;
+    short = Math.max(short, Math.min(rect.width, rect.height));
+  }
+  return short > 0 ? short * PALLET_BOX_STROKE : null;
+}
+
 export function VectorArt({ art, width, height, selected = false }: { art: SymbolArt; width: number; height: number; selected?: boolean }) {
   if (art.id === "process-supplier") {
     return (
@@ -157,6 +199,7 @@ export function VectorArt({ art, width, height, selected = false }: { art: Symbo
   const bounds = artBounds(art);
   const unit = Math.min(width / Math.max(bounds.width, 1), height / Math.max(bounds.height, 1)) || 1;
   const pen = fittedPen(width, height) / unit;
+  const cellPen = carriedCellStroke(art);
   const base = import.meta.env.BASE_URL;
   return (
     <svg width={width} height={height} viewBox={`${bounds.x} ${bounds.y} ${bounds.width} ${bounds.height}`} preserveAspectRatio="none" className="overflow-visible">
@@ -169,7 +212,7 @@ export function VectorArt({ art, width, height, selected = false }: { art: Symbo
           d={path.arrow ? sizedArrow(path.d, pen / path.arrow) : path.d}
           fill={path.fill ?? "none"}
           stroke={path.stroke ?? "none"}
-          strokeWidth={path.stroke ? Math.min(path.width > 0 ? path.width : pen, pen) : undefined}
+          strokeWidth={path.stroke ? Math.min(path.width > 0 ? path.width : pen, pen, cellPen !== null && isCarriedBox(art, path) ? cellPen : Infinity) : undefined}
           strokeLinejoin="round"
           strokeLinecap="round"
         />

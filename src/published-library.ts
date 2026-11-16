@@ -372,9 +372,9 @@ const PUBLISHED_ARCHIVE = {
                 "id": "mark-vewtvm",
                 "name": "Supplier",
                 "symbol": "rectangle",
-                "x": 1592,
+                "x": 2216,
                 "y": -16,
-                "width": 1181,
+                "width": 1192,
                 "height": 1800,
                 "artwork": "process-supplier"
               },
@@ -384,7 +384,7 @@ const PUBLISHED_ARCHIVE = {
                 "symbol": "rectangle",
                 "x": 56,
                 "y": 352,
-                "width": 360,
+                "width": 248,
                 "height": 320,
                 "artwork": "process-supplier"
               },
@@ -392,10 +392,10 @@ const PUBLISHED_ARCHIVE = {
                 "id": "mark-9sqd4k",
                 "name": "SUPPLIERS",
                 "symbol": "rectangle",
-                "x": 248,
-                "y": 384,
-                "width": 160,
-                "height": 40,
+                "x": 155,
+                "y": 390,
+                "width": 123,
+                "height": 28,
                 "shape": "text",
                 "color": "#c5221f",
                 "bold": true,
@@ -405,9 +405,9 @@ const PUBLISHED_ARCHIVE = {
                 "id": "mark-0gp9ew",
                 "name": "Supplier",
                 "symbol": "rectangle",
-                "x": 496,
+                "x": 384,
                 "y": 88,
-                "width": 440,
+                "width": 688,
                 "height": 240,
                 "artwork": "process-supplier"
               },
@@ -415,20 +415,20 @@ const PUBLISHED_ARCHIVE = {
                 "id": "mark-1nh6ba",
                 "name": "Supplier",
                 "symbol": "rectangle",
-                "x": 992,
+                "x": 1160,
                 "y": 88,
-                "width": 544,
-                "height": 568,
+                "width": 976,
+                "height": 680,
                 "artwork": "process-supplier"
               },
               {
                 "id": "mark-1znkls",
                 "name": "NOLA",
                 "symbol": "rectangle",
-                "x": 520,
-                "y": 120,
-                "width": 160,
-                "height": 40,
+                "x": 411,
+                "y": 126,
+                "width": 64,
+                "height": 28,
                 "shape": "text",
                 "color": "#c5221f",
                 "align": "left",
@@ -439,21 +439,22 @@ const PUBLISHED_ARCHIVE = {
                 "id": "mark-uep4vg",
                 "name": "",
                 "symbol": "rectangle",
-                "x": 512,
+                "x": 403,
                 "y": 280,
                 "width": 24,
                 "height": 24,
                 "shape": "ellipse",
-                "fill": "#188038"
+                "fill": "#00ff00",
+                "weight": 0
               },
               {
                 "id": "mark-agt9z7",
                 "name": "SMALL BOXES",
                 "symbol": "rectangle",
-                "x": 544,
-                "y": 256,
-                "width": 160,
-                "height": 56,
+                "x": 435,
+                "y": 273,
+                "width": 81,
+                "height": 13,
                 "shape": "text",
                 "color": "#c5221f",
                 "align": "left",
@@ -464,8 +465,8 @@ const PUBLISHED_ARCHIVE = {
                 "id": "mark-gaox33",
                 "name": "Production line in batches",
                 "symbol": "rectangle",
-                "x": 2704,
-                "y": 232,
+                "x": 3344,
+                "y": 272,
                 "width": 48,
                 "height": 1504,
                 "artwork": "process-production-line-in-batches"
@@ -474,10 +475,10 @@ const PUBLISHED_ARCHIVE = {
                 "id": "mark-hsvcar",
                 "name": "RBV SB = 0,44",
                 "symbol": "rectangle",
-                "x": 544,
-                "y": 272,
-                "width": 160,
-                "height": 56,
+                "x": 435,
+                "y": 289,
+                "width": 81,
+                "height": 13,
                 "shape": "text",
                 "color": "#c5221f",
                 "align": "left",
@@ -488,7 +489,7 @@ const PUBLISHED_ARCHIVE = {
                 "id": "mark-weg6lh",
                 "name": "transfert by Truck",
                 "symbol": "rectangle",
-                "x": 400,
+                "x": 291,
                 "y": 208,
                 "width": 80,
                 "height": 28,
@@ -498,7 +499,7 @@ const PUBLISHED_ARCHIVE = {
                 "id": "mark-0i8g1q",
                 "name": "transfert by Truck",
                 "symbol": "rectangle",
-                "x": 512,
+                "x": 403,
                 "y": 208,
                 "width": 80,
                 "height": 28,
@@ -509,17 +510,17 @@ const PUBLISHED_ARCHIVE = {
                 "id": "mark-1x2fhc",
                 "name": "Small Boxes delivered by Forklift full",
                 "symbol": "rectangle",
-                "x": 608,
-                "y": 200,
-                "width": 48,
-                "height": 19,
+                "x": 491,
+                "y": 193,
+                "width": 58,
+                "height": 23,
                 "artwork": "materials-forklift-sb-full"
               },
               {
                 "id": "mark-0y5v5n",
                 "name": "man-handled transfert",
                 "symbol": "rectangle",
-                "x": 608,
+                "x": 499,
                 "y": 160,
                 "width": 16,
                 "height": 24,
@@ -529,11 +530,729 @@ const PUBLISHED_ARCHIVE = {
                 "id": "mark-oxunpy",
                 "name": "Visual Information Flow",
                 "symbol": "rectangle",
-                "x": 624,
+                "x": 515,
                 "y": 144,
-                "width": 24,
-                "height": 8,
+                "width": 32,
+                "height": 11,
                 "artwork": "information-visual-information-flow"
+              },
+              {
+                "id": "mark-li8djf",
+                "name": "Controlled inventory: Big COntainers empty",
+                "symbol": "rectangle",
+                "x": 571,
+                "y": 183,
+                "width": 56,
+                "height": 26,
+                "artwork": "inventories-controlled-inventory-big-containers-empty",
+                "flip": true
+              },
+              {
+                "id": "mark-nymkn9",
+                "name": "Controlled inventory: Big COntainers empty",
+                "symbol": "rectangle",
+                "x": 571,
+                "y": 209,
+                "width": 56,
+                "height": 26,
+                "artwork": "inventories-controlled-inventory-big-containers-empty",
+                "flip": true
+              },
+              {
+                "id": "mark-bi6gmf",
+                "name": "Small Boxes (Pallet) full",
+                "symbol": "rectangle",
+                "x": 576,
+                "y": 187,
+                "width": 20,
+                "height": 19,
+                "artwork": "inventories-small-boxes-pallet-full"
+              },
+              {
+                "id": "mark-71hlhj",
+                "name": "Small Boxes (Pallet) full",
+                "symbol": "rectangle",
+                "x": 602,
+                "y": 187,
+                "width": 20,
+                "height": 19,
+                "artwork": "inventories-small-boxes-pallet-full"
+              },
+              {
+                "id": "mark-atttv8",
+                "name": "Small Boxes (Pallet) full",
+                "symbol": "rectangle",
+                "x": 603,
+                "y": 216,
+                "width": 20,
+                "height": 19,
+                "artwork": "inventories-small-boxes-pallet-full"
+              },
+              {
+                "id": "mark-t5h7up",
+                "name": "Small Boxes delivered by Forklift full",
+                "symbol": "rectangle",
+                "x": 587,
+                "y": 153,
+                "width": 58,
+                "height": 23,
+                "artwork": "materials-forklift-sb-full"
+              },
+              {
+                "id": "mark-hn1x5x",
+                "name": "",
+                "symbol": "rectangle",
+                "x": 659,
+                "y": 232,
+                "width": 88,
+                "height": 80,
+                "shape": "rectangle"
+              },
+              {
+                "id": "mark-tv6c21",
+                "name": "",
+                "symbol": "rectangle",
+                "x": 659,
+                "y": 136,
+                "width": 88,
+                "height": 80,
+                "shape": "rectangle"
+              },
+              {
+                "id": "mark-v8t3hn",
+                "name": "REPACKING",
+                "symbol": "rectangle",
+                "x": 678,
+                "y": 231,
+                "width": 53,
+                "height": 11,
+                "shape": "text",
+                "font": 9
+              },
+              {
+                "id": "mark-nbcx27",
+                "name": "STOCK SB",
+                "symbol": "rectangle",
+                "x": 680,
+                "y": 136,
+                "width": 47,
+                "height": 11,
+                "shape": "text",
+                "font": 9
+              },
+              {
+                "id": "mark-sp8n5t",
+                "name": "Small Boxes (Pallet) full",
+                "symbol": "rectangle",
+                "x": 670,
+                "y": 160,
+                "width": 20,
+                "height": 19,
+                "artwork": "inventories-small-boxes-pallet-full"
+              },
+              {
+                "id": "mark-jqouyk",
+                "name": "Small Boxes (Pallet) full",
+                "symbol": "rectangle",
+                "x": 694,
+                "y": 160,
+                "width": 20,
+                "height": 19,
+                "artwork": "inventories-small-boxes-pallet-full"
+              },
+              {
+                "id": "mark-yymezu",
+                "name": "Small Boxes (Pallet) full",
+                "symbol": "rectangle",
+                "x": 718,
+                "y": 160,
+                "width": 20,
+                "height": 19,
+                "artwork": "inventories-small-boxes-pallet-full"
+              },
+              {
+                "id": "mark-920k01",
+                "name": "Small Boxes (Pallet) full",
+                "symbol": "rectangle",
+                "x": 718,
+                "y": 184,
+                "width": 20,
+                "height": 19,
+                "artwork": "inventories-small-boxes-pallet-full"
+              },
+              {
+                "id": "mark-1a4hu6",
+                "name": "Small Boxes (Pallet) full",
+                "symbol": "rectangle",
+                "x": 670,
+                "y": 184,
+                "width": 20,
+                "height": 19,
+                "artwork": "inventories-small-boxes-pallet-full"
+              },
+              {
+                "id": "mark-hkc15z",
+                "name": "Small Boxes (Pallet) full",
+                "symbol": "rectangle",
+                "x": 694,
+                "y": 184,
+                "width": 20,
+                "height": 19,
+                "artwork": "inventories-small-boxes-pallet-full"
+              },
+              {
+                "id": "mark-t2bqs3",
+                "name": "Small Boxes (Pallet) full",
+                "symbol": "rectangle",
+                "x": 717,
+                "y": 283,
+                "width": 20,
+                "height": 19,
+                "artwork": "inventories-small-boxes-pallet-full"
+              },
+              {
+                "id": "mark-ul5awm",
+                "name": "Small Boxes (Pallet) full",
+                "symbol": "rectangle",
+                "x": 672,
+                "y": 283,
+                "width": 20,
+                "height": 19,
+                "artwork": "inventories-small-boxes-pallet-full"
+              },
+              {
+                "id": "mark-ws7pbk",
+                "name": "man-handled transfert",
+                "symbol": "rectangle",
+                "x": 694,
+                "y": 256,
+                "width": 16,
+                "height": 24,
+                "artwork": "materials-man-transfer"
+              },
+              {
+                "id": "mark-wn85a8",
+                "name": "Small Boxes delivered by Forklift full",
+                "symbol": "rectangle",
+                "x": 755,
+                "y": 281,
+                "width": 58,
+                "height": 23,
+                "artwork": "materials-forklift-sb-full"
+              },
+              {
+                "id": "mark-jhs7te",
+                "name": "Controlled inventory: Small Boxes empty",
+                "symbol": "rectangle",
+                "x": 776,
+                "y": 136,
+                "width": 66,
+                "height": 80,
+                "artwork": "inventories-controlled-inventory-small-boxes-empty"
+              },
+              {
+                "id": "mark-ta38dv",
+                "name": "transfert by Truck",
+                "symbol": "rectangle",
+                "x": 968,
+                "y": 144,
+                "width": 80,
+                "height": 28,
+                "artwork": "materials-truck-transfer"
+              },
+              {
+                "id": "mark-vbedl4",
+                "name": "transfert by Truck",
+                "symbol": "rectangle",
+                "x": 968,
+                "y": 192,
+                "width": 80,
+                "height": 28,
+                "artwork": "materials-truck-transfer"
+              },
+              {
+                "id": "mark-r01kyo",
+                "name": "Small Boxes delivered by Forklift full",
+                "symbol": "rectangle",
+                "x": 864,
+                "y": 128,
+                "width": 58,
+                "height": 23,
+                "artwork": "materials-forklift-sb-full"
+              },
+              {
+                "id": "mark-ib8vs4",
+                "name": "Small Boxes delivered by Forklift empty",
+                "symbol": "rectangle",
+                "x": 868,
+                "y": 177,
+                "width": 58,
+                "height": 23,
+                "artwork": "materials-forklift-sb-empty"
+              },
+              {
+                "id": "mark-vmoo9t",
+                "name": "SIT WAREHOUSE (MAF + MEP)",
+                "symbol": "rectangle",
+                "x": 1192,
+                "y": 128,
+                "width": 330,
+                "height": 28,
+                "shape": "text",
+                "color": "#c5221f",
+                "align": "left",
+                "bold": true,
+                "font": 23
+              },
+              {
+                "id": "mark-hco5t6",
+                "name": "transfert by Truck",
+                "symbol": "rectangle",
+                "x": 1200,
+                "y": 274,
+                "width": 80,
+                "height": 28,
+                "artwork": "materials-truck-transfer",
+                "flip": true
+              },
+              {
+                "id": "mark-battxc",
+                "name": "Controlled inventory: Big COntainers empty",
+                "symbol": "rectangle",
+                "x": 1368,
+                "y": 276,
+                "width": 56,
+                "height": 26,
+                "artwork": "inventories-controlled-inventory-big-containers-empty",
+                "flip": true
+              },
+              {
+                "id": "mark-29dbth",
+                "name": "Small Boxes (Pallet) full",
+                "symbol": "rectangle",
+                "x": 1400,
+                "y": 284,
+                "width": 20,
+                "height": 19,
+                "artwork": "inventories-small-boxes-pallet-full"
+              },
+              {
+                "id": "mark-hhzhkk",
+                "name": "Small Boxes (Pallet) full",
+                "symbol": "rectangle",
+                "x": 1400,
+                "y": 253,
+                "width": 20,
+                "height": 19,
+                "artwork": "inventories-small-boxes-pallet-full"
+              },
+              {
+                "id": "mark-274ivz",
+                "name": "Small Boxes (Pallet) full",
+                "symbol": "rectangle",
+                "x": 1373,
+                "y": 253,
+                "width": 20,
+                "height": 19,
+                "artwork": "inventories-small-boxes-pallet-full"
+              },
+              {
+                "id": "mark-zyyknu",
+                "name": "Controlled inventory: Big COntainers empty",
+                "symbol": "rectangle",
+                "x": 1368,
+                "y": 250,
+                "width": 56,
+                "height": 26,
+                "artwork": "inventories-controlled-inventory-big-containers-empty",
+                "flip": true
+              },
+              {
+                "id": "mark-zin6jv",
+                "name": "Visual Information Flow",
+                "symbol": "rectangle",
+                "x": 1312,
+                "y": 208,
+                "width": 32,
+                "height": 11,
+                "artwork": "information-visual-information-flow"
+              },
+              {
+                "id": "mark-7fkyux",
+                "name": "man-handled transfert",
+                "symbol": "rectangle",
+                "x": 1296,
+                "y": 224,
+                "width": 16,
+                "height": 24,
+                "artwork": "materials-man-transfer"
+              },
+              {
+                "id": "mark-y9v8ae",
+                "name": "Small Boxes delivered by Forklift full",
+                "symbol": "rectangle",
+                "x": 1289,
+                "y": 257,
+                "width": 58,
+                "height": 23,
+                "artwork": "materials-forklift-sb-full"
+              },
+              {
+                "id": "mark-9b48pb",
+                "name": "Small Boxes (Pallet) full",
+                "symbol": "rectangle",
+                "x": 1572,
+                "y": 339,
+                "width": 20,
+                "height": 19,
+                "artwork": "inventories-small-boxes-pallet-full"
+              },
+              {
+                "id": "mark-c01t6n",
+                "name": "Small Boxes (Pallet) full",
+                "symbol": "rectangle",
+                "x": 1521,
+                "y": 339,
+                "width": 20,
+                "height": 19,
+                "artwork": "inventories-small-boxes-pallet-full"
+              },
+              {
+                "id": "mark-t9v3rm",
+                "name": "",
+                "symbol": "rectangle",
+                "x": 1512,
+                "y": 288,
+                "width": 88,
+                "height": 80,
+                "shape": "rectangle"
+              },
+              {
+                "id": "mark-9g40ox",
+                "name": "man-handled transfert",
+                "symbol": "rectangle",
+                "x": 1548,
+                "y": 312,
+                "width": 16,
+                "height": 24,
+                "artwork": "materials-man-transfer"
+              },
+              {
+                "id": "mark-xo91ta",
+                "name": "REPACKING",
+                "symbol": "rectangle",
+                "x": 1530,
+                "y": 288,
+                "width": 53,
+                "height": 11,
+                "shape": "text",
+                "font": 9
+              },
+              {
+                "id": "mark-644g28",
+                "name": "Small Boxes delivered by Forklift full",
+                "symbol": "rectangle",
+                "x": 1432,
+                "y": 277,
+                "width": 58,
+                "height": 23,
+                "artwork": "materials-forklift-sb-full"
+              },
+              {
+                "id": "mark-fhlrpd",
+                "name": "",
+                "symbol": "rectangle",
+                "x": 1648,
+                "y": 200,
+                "width": 88,
+                "height": 128,
+                "shape": "rectangle"
+              },
+              {
+                "id": "mark-262b6f",
+                "name": "STOCK SB",
+                "symbol": "rectangle",
+                "x": 1672,
+                "y": 200,
+                "width": 47,
+                "height": 11,
+                "shape": "text",
+                "font": 9
+              },
+              {
+                "id": "mark-bpz0df",
+                "name": "Small Boxes (Pallet) full",
+                "symbol": "rectangle",
+                "x": 1659,
+                "y": 224,
+                "width": 20,
+                "height": 19,
+                "artwork": "inventories-small-boxes-pallet-full"
+              },
+              {
+                "id": "mark-jsx821",
+                "name": "Small Boxes (Pallet) full",
+                "symbol": "rectangle",
+                "x": 1683,
+                "y": 224,
+                "width": 20,
+                "height": 19,
+                "artwork": "inventories-small-boxes-pallet-full"
+              },
+              {
+                "id": "mark-jrhsiz",
+                "name": "Small Boxes (Pallet) full",
+                "symbol": "rectangle",
+                "x": 1707,
+                "y": 224,
+                "width": 20,
+                "height": 19,
+                "artwork": "inventories-small-boxes-pallet-full"
+              },
+              {
+                "id": "mark-cg5a7a",
+                "name": "Small Boxes (Pallet) full",
+                "symbol": "rectangle",
+                "x": 1707,
+                "y": 248,
+                "width": 20,
+                "height": 19,
+                "artwork": "inventories-small-boxes-pallet-full"
+              },
+              {
+                "id": "mark-c04zyz",
+                "name": "Small Boxes (Pallet) full",
+                "symbol": "rectangle",
+                "x": 1659,
+                "y": 248,
+                "width": 20,
+                "height": 19,
+                "artwork": "inventories-small-boxes-pallet-full"
+              },
+              {
+                "id": "mark-mxbpep",
+                "name": "Small Boxes (Pallet) full",
+                "symbol": "rectangle",
+                "x": 1683,
+                "y": 248,
+                "width": 20,
+                "height": 19,
+                "artwork": "inventories-small-boxes-pallet-full"
+              },
+              {
+                "id": "mark-vbsr1e",
+                "name": "NOT HO",
+                "symbol": "rectangle",
+                "x": 1443,
+                "y": 329,
+                "width": 37,
+                "height": 11,
+                "shape": "text",
+                "font": 9
+              },
+              {
+                "id": "mark-vs3mc2",
+                "name": "HO",
+                "symbol": "rectangle",
+                "x": 1516,
+                "y": 232,
+                "width": 14,
+                "height": 11,
+                "shape": "text",
+                "font": 9
+              },
+              {
+                "id": "mark-5kzw6f",
+                "name": "HO",
+                "symbol": "rectangle",
+                "x": 1623,
+                "y": 323,
+                "width": 14,
+                "height": 11,
+                "shape": "text",
+                "font": 9
+              },
+              {
+                "id": "mark-va31k5",
+                "name": "Small Boxes (Pallet) full",
+                "symbol": "rectangle",
+                "x": 1659,
+                "y": 272,
+                "width": 20,
+                "height": 19,
+                "artwork": "inventories-small-boxes-pallet-full"
+              },
+              {
+                "id": "mark-3ksya7",
+                "name": "Small Boxes (Pallet) full",
+                "symbol": "rectangle",
+                "x": 1683,
+                "y": 272,
+                "width": 20,
+                "height": 19,
+                "artwork": "inventories-small-boxes-pallet-full"
+              },
+              {
+                "id": "mark-trkntz",
+                "name": "Small Boxes (Pallet) full",
+                "symbol": "rectangle",
+                "x": 1707,
+                "y": 272,
+                "width": 20,
+                "height": 19,
+                "artwork": "inventories-small-boxes-pallet-full"
+              },
+              {
+                "id": "mark-qvrru9",
+                "name": "Small Boxes (Pallet) full",
+                "symbol": "rectangle",
+                "x": 1707,
+                "y": 296,
+                "width": 20,
+                "height": 19,
+                "artwork": "inventories-small-boxes-pallet-full"
+              },
+              {
+                "id": "mark-i5d3f3",
+                "name": "Small Boxes (Pallet) full",
+                "symbol": "rectangle",
+                "x": 1659,
+                "y": 296,
+                "width": 20,
+                "height": 19,
+                "artwork": "inventories-small-boxes-pallet-full"
+              },
+              {
+                "id": "mark-mh8chd",
+                "name": "Small Boxes (Pallet) full",
+                "symbol": "rectangle",
+                "x": 1683,
+                "y": 296,
+                "width": 20,
+                "height": 19,
+                "artwork": "inventories-small-boxes-pallet-full"
+              },
+              {
+                "id": "mark-uuw019",
+                "name": "Controlled inventory: Big COntainers empty",
+                "symbol": "rectangle",
+                "x": 1832,
+                "y": 256,
+                "width": 56,
+                "height": 26,
+                "artwork": "inventories-controlled-inventory-big-containers-empty",
+                "flip": true
+              },
+              {
+                "id": "mark-koc1qu",
+                "name": "Controlled inventory: Big COntainers empty",
+                "symbol": "rectangle",
+                "x": 1832,
+                "y": 288,
+                "width": 56,
+                "height": 26,
+                "artwork": "inventories-controlled-inventory-big-containers-empty",
+                "flip": true
+              },
+              {
+                "id": "mark-quvwpi",
+                "name": "Small Boxes (Pallet) full",
+                "symbol": "rectangle",
+                "x": 1864,
+                "y": 296,
+                "width": 20,
+                "height": 19,
+                "artwork": "inventories-small-boxes-pallet-full"
+              },
+              {
+                "id": "mark-0u31n2",
+                "name": "Small Boxes (Pallet) full",
+                "symbol": "rectangle",
+                "x": 1864,
+                "y": 264,
+                "width": 20,
+                "height": 19,
+                "artwork": "inventories-small-boxes-pallet-full"
+              },
+              {
+                "id": "mark-foelqa",
+                "name": "Small Boxes (Pallet) full",
+                "symbol": "rectangle",
+                "x": 1837,
+                "y": 264,
+                "width": 20,
+                "height": 19,
+                "artwork": "inventories-small-boxes-pallet-full"
+              },
+              {
+                "id": "mark-1w7qqa",
+                "name": "Small Boxes delivered by Forklift full",
+                "symbol": "rectangle",
+                "x": 1752,
+                "y": 272,
+                "width": 58,
+                "height": 23,
+                "artwork": "materials-forklift-sb-full"
+              },
+              {
+                "id": "mark-luwfps",
+                "name": "transfert by Truck",
+                "symbol": "rectangle",
+                "x": 1984,
+                "y": 288,
+                "width": 80,
+                "height": 28,
+                "artwork": "materials-truck-transfer"
+              },
+              {
+                "id": "mark-5con48",
+                "name": "Small Boxes delivered by Forklift full",
+                "symbol": "rectangle",
+                "x": 1904,
+                "y": 272,
+                "width": 58,
+                "height": 23,
+                "artwork": "materials-forklift-sb-full"
+              },
+              {
+                "id": "mark-ncxt0i",
+                "name": "",
+                "symbol": "rectangle",
+                "x": 1200,
+                "y": 392,
+                "width": 24,
+                "height": 24,
+                "shape": "ellipse",
+                "fill": "#00ff00",
+                "weight": 0
+              },
+              {
+                "id": "mark-nfw1f4",
+                "name": "SMALL BOXES",
+                "symbol": "rectangle",
+                "x": 1232,
+                "y": 384,
+                "width": 81,
+                "height": 13,
+                "shape": "text",
+                "color": "#c5221f",
+                "align": "left",
+                "bold": true,
+                "font": 11
+              },
+              {
+                "id": "mark-zjwpau",
+                "name": "RBV SB = 0,44",
+                "symbol": "rectangle",
+                "x": 1232,
+                "y": 400,
+                "width": 81,
+                "height": 13,
+                "shape": "text",
+                "color": "#c5221f",
+                "align": "left",
+                "bold": true,
+                "font": 11
               }
             ],
             "sizes": {},
@@ -555,7 +1274,7 @@ const PUBLISHED_ARCHIVE = {
                     "y": 487.51194981385515
                   },
                   {
-                    "x": 456,
+                    "x": 360,
                     "y": 264
                   }
                 ],
@@ -632,9 +1351,215 @@ const PUBLISHED_ARCHIVE = {
                   "at": 140
                 },
                 "shaped": true
+              },
+              "link-4v6hw4": {
+                "x": 0,
+                "y": 0,
+                "from": {
+                  "side": "n",
+                  "at": 716
+                },
+                "to": {
+                  "side": "s",
+                  "at": 716
+                },
+                "shaped": true
+              },
+              "link-fk5ew9": {
+                "x": 0,
+                "y": 0,
+                "from": {
+                  "side": "e",
+                  "at": 222
+                },
+                "to": {
+                  "side": "w",
+                  "at": 222
+                },
+                "shaped": true
+              },
+              "link-nsm9ln": {
+                "x": 0,
+                "y": 0,
+                "from": {
+                  "side": "e",
+                  "at": 291.5
+                },
+                "to": {
+                  "side": "w",
+                  "at": 292.5
+                },
+                "corners": [
+                  {
+                    "x": 692,
+                    "y": 292.5
+                  }
+                ],
+                "shaped": true
+              },
+              "link-nicmbu": {
+                "x": 0,
+                "y": 0,
+                "from": {
+                  "side": "e",
+                  "at": 158
+                },
+                "to": {
+                  "side": "w",
+                  "at": 158
+                },
+                "shaped": true
+              },
+              "link-ccwjvt": {
+                "x": 0,
+                "y": 0,
+                "from": {
+                  "side": "e",
+                  "at": 272
+                },
+                "to": {
+                  "side": "w",
+                  "at": 176
+                },
+                "corners": [
+                  {
+                    "x": 752,
+                    "y": 272
+                  },
+                  {
+                    "x": 752,
+                    "y": 176
+                  }
+                ],
+                "shaped": true
+              },
+              "link-wqf2t2": {
+                "x": 0,
+                "y": 0,
+                "from": {
+                  "side": "e",
+                  "at": 206
+                },
+                "to": {
+                  "side": "w",
+                  "at": 206
+                },
+                "shaped": true
+              },
+              "link-550etm": {
+                "x": 0,
+                "y": 0,
+                "from": {
+                  "side": "e",
+                  "at": 288
+                },
+                "to": {
+                  "side": "w",
+                  "at": 288
+                },
+                "corners": [
+                  {
+                    "x": 1344,
+                    "y": 288
+                  },
+                  {
+                    "x": 1344,
+                    "y": 288
+                  }
+                ],
+                "shaped": true
+              },
+              "link-5p11ht": {
+                "x": 0,
+                "y": 0,
+                "from": {
+                  "side": "e",
+                  "at": 348.5
+                },
+                "to": {
+                  "side": "w",
+                  "at": 348.5
+                },
+                "shaped": true
+              },
+              "link-2dvj2z": {
+                "x": 0,
+                "y": 0,
+                "from": {
+                  "side": "s",
+                  "at": 1416
+                },
+                "to": {
+                  "side": "w",
+                  "at": 350
+                },
+                "corners": [
+                  {
+                    "x": 1416,
+                    "y": 350
+                  }
+                ],
+                "shaped": true
+              },
+              "link-v0b4wn": {
+                "x": 0,
+                "y": 0,
+                "shaped": true,
+                "from": {
+                  "side": "e",
+                  "at": 263
+                },
+                "to": {
+                  "side": "w",
+                  "at": 255
+                },
+                "corners": [
+                  {
+                    "x": 1424,
+                    "y": 255
+                  }
+                ]
+              },
+              "link-jsz3s5": {
+                "x": 0,
+                "y": 0,
+                "from": {
+                  "side": "e",
+                  "at": 344
+                },
+                "to": {
+                  "side": "s",
+                  "at": 1688
+                },
+                "corners": [
+                  {
+                    "x": 1688,
+                    "y": 344
+                  }
+                ],
+                "shaped": true
+              },
+              "link-qks78j": {
+                "x": 0,
+                "y": 0,
+                "shaped": true,
+                "from": {
+                  "side": "e",
+                  "at": 302
+                },
+                "to": {
+                  "side": "w",
+                  "at": 302
+                }
               }
             },
-            "strokes": {},
+            "strokes": {
+              "link-nsm9ln": {
+                "color": "#202124",
+                "dash": "",
+                "arrow": "end"
+              }
+            },
             "links": [
               {
                 "id": "link-plwj8e",
@@ -649,10 +1574,107 @@ const PUBLISHED_ARCHIVE = {
                 "to": "mark-1nh6ba",
                 "kind": "material",
                 "label": ""
+              },
+              {
+                "id": "link-fk5ew9",
+                "from": "mark-0i8g1q",
+                "to": "mark-nymkn9",
+                "kind": "material",
+                "label": ""
+              },
+              {
+                "id": "link-nsm9ln",
+                "from": "mark-ul5awm",
+                "to": "mark-t2bqs3",
+                "kind": "material",
+                "label": ""
+              },
+              {
+                "id": "link-nicmbu",
+                "from": "mark-jhs7te",
+                "to": "mark-ta38dv",
+                "kind": "material",
+                "label": ""
+              },
+              {
+                "id": "link-wqf2t2",
+                "from": "mark-jhs7te",
+                "to": "mark-vbedl4",
+                "kind": "material",
+                "label": ""
+              },
+              {
+                "id": "link-nd63e5",
+                "from": "mark-0gp9ew",
+                "to": "mark-1nh6ba",
+                "kind": "material",
+                "label": ""
+              },
+              {
+                "id": "link-ccwjvt",
+                "from": "mark-hn1x5x",
+                "to": "mark-jhs7te",
+                "kind": "material",
+                "label": ""
+              },
+              {
+                "id": "link-550etm",
+                "from": "mark-hco5t6",
+                "to": "mark-battxc",
+                "kind": "material",
+                "label": ""
+              },
+              {
+                "id": "link-5p11ht",
+                "from": "mark-c01t6n",
+                "to": "mark-9b48pb",
+                "kind": "material",
+                "label": ""
+              },
+              {
+                "id": "link-2dvj2z",
+                "from": "mark-battxc",
+                "to": "mark-t9v3rm",
+                "kind": "material",
+                "label": ""
+              },
+              {
+                "id": "link-v0b4wn",
+                "from": "mark-zyyknu",
+                "to": "mark-fhlrpd",
+                "kind": "material",
+                "label": ""
+              },
+              {
+                "id": "link-jsz3s5",
+                "from": "mark-t9v3rm",
+                "to": "mark-fhlrpd",
+                "kind": "material",
+                "label": ""
+              },
+              {
+                "id": "link-tdarhb",
+                "from": "mark-fhlrpd",
+                "to": "mark-koc1qu",
+                "kind": "material",
+                "label": ""
+              },
+              {
+                "id": "link-qks78j",
+                "from": "mark-koc1qu",
+                "to": "mark-luwfps",
+                "kind": "material",
+                "label": ""
               }
             ],
             "stack": {
-              "back": [],
+              "back": [
+                "mark-1nh6ba",
+                "mark-t9v3rm",
+                "mark-zyyknu",
+                "mark-0gp9ew",
+                "mark-hn1x5x"
+              ],
               "front": []
             },
             "icons": {},
@@ -660,7 +1682,7 @@ const PUBLISHED_ARCHIVE = {
             "canvas": {
               "x": 0,
               "y": -40,
-              "width": 2800,
+              "width": 3424,
               "height": 1840
             }
           },
@@ -677,6 +1699,49 @@ export function publishedLibrary(): Archive {
   const parsed = parseArchive(JSON.parse(JSON.stringify(PUBLISHED_ARCHIVE)));
   if (!parsed) throw new Error("Published library is not a valid archive");
   return parsed;
+}
+
+/** Bump a sheet when the copy already saved in a browser should be replaced once. */
+const SHIPPED_REVISION: Record<string, number> = {
+  "mifa-ga-melfi": 2,
+};
+
+export const SHIPPED_KEY = "mifa.shipped.v1";
+
+export function readShippedRevisions(raw: string | null): Record<string, number> {
+  try {
+    const parsed = JSON.parse(raw || "{}") as unknown;
+    if (!parsed || typeof parsed !== "object") return {};
+    return Object.fromEntries(Object.entries(parsed).filter((entry): entry is [string, number] => typeof entry[1] === "number"));
+  } catch {
+    return {};
+  }
+}
+
+/** Replace a shipped sheet once, then leave later edits in this browser alone. */
+export function applyShippedUpdates(stored: Archive, seen: Record<string, number>): { archive: Archive; seen: Record<string, number> } {
+  const published = publishedLibrary();
+  const byId = new Map(published.folders.flatMap((folder) => folder.mifas.map((mifa) => [mifa.id, mifa] as const)));
+  const nextSeen = { ...seen };
+  let changed = false;
+  const folders = stored.folders.map((folder) => {
+    let folderChanged = false;
+    const mifas = folder.mifas.map((mifa) => {
+      const revision = SHIPPED_REVISION[mifa.id];
+      const shipped = byId.get(mifa.id);
+      if (!revision || !shipped || (nextSeen[mifa.id] ?? 0) >= revision) return mifa;
+      nextSeen[mifa.id] = revision;
+      if (JSON.stringify(mifa.document) === JSON.stringify(shipped.document)) return mifa;
+      folderChanged = true;
+      changed = true;
+      return { ...mifa, document: shipped.document };
+    });
+    return folderChanged ? { ...folder, mifas } : folder;
+  });
+  for (const [id, revision] of Object.entries(SHIPPED_REVISION)) {
+    if ((nextSeen[id] ?? 0) < revision) nextSeen[id] = revision;
+  }
+  return { archive: changed ? { ...stored, folders } : stored, seen: nextSeen };
 }
 
 /** Add shipped factories and sheets that this browser does not already have. An existing sheet is left as it is. */
