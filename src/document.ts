@@ -437,13 +437,13 @@ export function nextQuarter(turn: QuarterTurn | undefined): QuarterTurn {
   return (((turn ?? 0) + 90) % 360) as QuarterTurn;
 }
 
-/** Resize from a handle. A circle keeps both sides equal, down to the given minimum. */
+/** Resize from a handle. A circle keeps both sides equal. A ratio keeps the drawing's proportions, down to the given minimum. */
 export function resizeBox(
   handle: string,
   origin: { x: number; y: number; width: number; height: number },
   dx: number,
   dy: number,
-  options?: { minWidth?: number; minHeight?: number; circle?: boolean },
+  options?: { minWidth?: number; minHeight?: number; circle?: boolean; ratio?: number },
 ) {
   const minW = options?.minWidth ?? 40;
   const minH = options?.circle ? minW : (options?.minHeight ?? 40);
@@ -457,6 +457,36 @@ export function resizeBox(
   if (handle.includes("n")) {
     height = origin.height - dy;
     y = origin.y + dy;
+  }
+  if (options?.ratio && options.ratio > 0 && !options.circle) {
+    const ratio = options.ratio;
+    const alongWidth = handle === "e" || handle === "w";
+    const alongHeight = handle === "n" || handle === "s";
+    const widthDriven = alongWidth || (!alongHeight && Math.abs(width - origin.width) >= Math.abs(height - origin.height));
+    let nextWidth = Math.max(1, widthDriven ? width : height * ratio);
+    let nextHeight = Math.max(1, widthDriven ? nextWidth / ratio : height);
+    const longest = Math.max(nextWidth, nextHeight);
+    const floor = Math.max(1, Math.min(minW, minH));
+    if (longest < floor) {
+      const scale = floor / longest;
+      nextWidth *= scale;
+      nextHeight *= scale;
+    }
+    const snapTo = Math.max(nextWidth, nextHeight) < 24 ? 1 : 8;
+    if (nextWidth >= nextHeight) {
+      nextWidth = Math.max(1, snap(nextWidth, snapTo));
+      nextHeight = Math.max(1, Math.round(nextWidth / ratio));
+    } else {
+      nextHeight = Math.max(1, snap(nextHeight, snapTo));
+      nextWidth = Math.max(1, Math.round(nextHeight * ratio));
+    }
+    if (handle.includes("w")) x = origin.x + origin.width - nextWidth;
+    else if (alongHeight) x = origin.x + (origin.width - nextWidth) / 2;
+    else x = origin.x;
+    if (handle.includes("n")) y = origin.y + origin.height - nextHeight;
+    else if (alongWidth) y = origin.y + (origin.height - nextHeight) / 2;
+    else y = origin.y;
+    return { x: snap(x), y: snap(y), width: nextWidth, height: nextHeight };
   }
   if (width < minW) {
     if (handle.includes("w")) x -= minW - width;
@@ -487,13 +517,48 @@ export function resizeBox(
   return { x: snap(x), y: snap(y), width, height };
 }
 
-/** Grow or shrink a box around its center, and keep it on the sheet. */
+/** Grow or shrink a box around its center, and keep it on the sheet. Both sides move together, so a wide symbol stays wide. */
 export function scaledBox(box: { x: number; y: number; width: number; height: number }, factor: number, page: SheetBox = sheetBox()) {
-  const width = snap(Math.min(720, Math.max(28, box.width * factor)));
-  const height = snap(Math.min(720, Math.max(28, box.height * factor)));
-  const x = snap(box.x + (box.width - width) / 2);
-  const y = snap(box.y + (box.height - height) / 2);
-  return { ...keepOnSheet(x, y, width, height, page), width, height };
+  return placeScaled(box, scaleToGrid(box.width, box.height, factor), page);
+}
+
+/** Grow or shrink a symbol from its drawing's proportions, even when the current box has been stretched. */
+export function scaledSymbol(
+  box: { x: number; y: number; width: number; height: number },
+  naturalWidth: number,
+  naturalHeight: number,
+  turn: QuarterTurn | undefined,
+  factor: number,
+  page: SheetBox = sheetBox(),
+) {
+  const sideways = turn === 90 || turn === 270;
+  const width = Math.max(1, sideways ? naturalHeight : naturalWidth);
+  const height = Math.max(1, sideways ? naturalWidth : naturalHeight);
+  const wide = width >= height;
+  const measured = wide ? box.width : box.height;
+  const ratio = width / height;
+  const fitted = scaleToGrid(wide ? measured : measured * ratio, wide ? measured / ratio : measured, factor);
+  return placeScaled(box, fitted, page);
+}
+
+function placeScaled(box: { x: number; y: number; width: number; height: number }, fitted: { width: number; height: number }, page: SheetBox) {
+  const x = snap(box.x + (box.width - fitted.width) / 2);
+  const y = snap(box.y + (box.height - fitted.height) / 2);
+  return { ...keepOnSheet(x, y, fitted.width, fitted.height, page), width: fitted.width, height: fitted.height };
+}
+
+/** Snap the long side to the grid, then set the short side from the same ratio. The short side may be under one grid step. */
+function scaleToGrid(width: number, height: number, factor: number) {
+  const safeWidth = Math.max(width, 1);
+  const safeHeight = Math.max(height, 1);
+  const wide = safeWidth >= safeHeight;
+  const ratio = safeWidth / safeHeight;
+  const long = wide ? safeWidth : safeHeight;
+  let nextLong = snap(long * factor);
+  if (Math.abs(nextLong - long) < 1) nextLong = snap(long + (factor >= 1 ? 8 : -8));
+  nextLong = Math.min(720, Math.max(8, nextLong));
+  const nextShort = Math.max(1, Math.round(wide ? nextLong / ratio : nextLong * ratio));
+  return wide ? { width: nextLong, height: nextShort } : { width: nextShort, height: nextLong };
 }
 
 type SizeBox = { x: number; y: number; width: number; height: number };
@@ -510,20 +575,58 @@ export function symbolPercent(box: { width: number; height: number }, naturalWid
   return Math.round((along / naturalWidth) * 100);
 }
 
-/** Resize a symbol so it is the requested percent of its normal width. */
-export function boxForPercent(box: SizeBox, naturalWidth: number, turn: QuarterTurn | undefined, percent: number, page: SheetBox = sheetBox()) {
+/** Resize a symbol so it is the requested percent of its normal width, keeping the drawing's proportions. */
+export function boxForPercent(
+  box: SizeBox,
+  naturalWidth: number,
+  turn: QuarterTurn | undefined,
+  percent: number,
+  page: SheetBox = sheetBox(),
+  naturalHeight?: number,
+) {
   const size = Math.min(400, Math.max(10, percent));
-  const along = turn === 90 || turn === 270 ? box.height : box.width;
+  const sideways = turn === 90 || turn === 270;
+  if (naturalHeight && naturalHeight > 0 && naturalWidth > 0) {
+    const width = (sideways ? naturalHeight : naturalWidth) * (size / 100);
+    const height = (sideways ? naturalWidth : naturalHeight) * (size / 100);
+    return resizeAboutCenter(box, width, height, page);
+  }
+  const along = sideways ? box.height : box.width;
   const factor = along > 0 ? (naturalWidth * (size / 100)) / along : 1;
   return resizeAboutCenter(box, box.width * factor, box.height * factor, page);
 }
 
 function resizeAboutCenter(box: SizeBox, width: number, height: number, page: SheetBox) {
-  const nextWidth = Math.min(720, Math.max(28, Math.round(width)));
-  const nextHeight = Math.min(720, Math.max(28, Math.round(height)));
-  const x = box.x + (box.width - nextWidth) / 2;
-  const y = box.y + (box.height - nextHeight) / 2;
-  return { ...keepOnSheet(x, y, nextWidth, nextHeight, page), width: nextWidth, height: nextHeight };
+  const fitted = fitLongSide(width, height);
+  const x = box.x + (box.width - fitted.width) / 2;
+  const y = box.y + (box.height - fitted.height) / 2;
+  return { ...keepOnSheet(x, y, fitted.width, fitted.height, page), width: fitted.width, height: fitted.height };
+}
+
+/** Keep the requested proportions. The long side stays between 8px and 720px; the short side follows it. */
+function fitLongSide(width: number, height: number) {
+  let nextWidth = Math.max(width, 1);
+  let nextHeight = Math.max(height, 1);
+  const longest = Math.max(nextWidth, nextHeight);
+  if (longest > 720) {
+    const scale = 720 / longest;
+    nextWidth *= scale;
+    nextHeight *= scale;
+  }
+  const grown = Math.max(nextWidth, nextHeight);
+  if (grown < 8) {
+    const scale = 8 / grown;
+    nextWidth *= scale;
+    nextHeight *= scale;
+  }
+  const wide = nextWidth >= nextHeight;
+  const ratio = nextWidth / nextHeight;
+  if (wide) {
+    const snapped = Math.round(nextWidth);
+    return { width: snapped, height: Math.max(1, Math.round(snapped / ratio)) };
+  }
+  const snapped = Math.round(nextHeight);
+  return { width: Math.max(1, Math.round(snapped * ratio)), height: snapped };
 }
 
 /** Swap the box when a quarter turn changes which side is longer. */
@@ -1372,6 +1475,44 @@ export function centerPortsOnMove(
   for (const link of doc.links ?? []) consider(link.id, link.from, link.to);
   if (!changed) return baseline && baseline !== doc.bends ? { ...doc, bends: baseline } : doc;
   return { ...doc, bends };
+}
+
+/** Move symbols, notes, and line icons by a fixed step. The arrow stays on the same side. */
+export function movePlaced(
+  doc: MifaDocument,
+  starts: Record<string, { x: number; y: number; width: number; height: number }>,
+  dx: number,
+  dy: number,
+  extras?: { iconStarts?: Record<string, LineIcon>; origin?: MifaDocument; lanes?: (id: string) => number },
+): MifaDocument {
+  const origin = extras?.origin ?? doc;
+  const movedIds = Object.keys(starts).filter((id) => !id.startsWith("icon:"));
+  const placed: MifaDocument = {
+    ...doc,
+    positions: {
+      ...doc.positions,
+      ...Object.fromEntries(
+        Object.entries(starts)
+          .filter(([id]) => !id.startsWith("mark-") && !id.startsWith("icon:"))
+          .map(([id, box]) => [id, { x: box.x + dx, y: box.y + dy }]),
+      ),
+    },
+    marks: (doc.marks ?? []).map((mark) => (starts[mark.id] ? { ...mark, x: starts[mark.id].x + dx, y: starts[mark.id].y + dy } : mark)),
+    icons: {
+      ...doc.icons,
+      ...Object.fromEntries(
+        Object.entries(starts)
+          .filter(([id]) => id.startsWith("icon:"))
+          .map(([id, box]) => {
+            const key = id.slice(5);
+            const prev = origin.icons?.[key];
+            return [key, { x: box.x + dx, y: box.y + dy, width: box.width, height: box.height, ...(prev?.flip ? { flip: true } : {}), ...(prev?.turn ? { turn: prev.turn } : {}), placed: true as const }];
+          }),
+      ),
+      ...Object.fromEntries(Object.entries(extras?.iconStarts ?? {}).map(([key, box]) => [key, { ...box, x: box.x + dx, y: box.y + dy }])),
+    },
+  };
+  return centerPortsOnMove(placed, movedIds, { x: dx, y: dy }, pinOpenRoutes(origin, movedIds, extras?.lanes));
 }
 
 function nodeById(doc: MifaDocument, laid: Sheet, id: string): SheetNode | null {

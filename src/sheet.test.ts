@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { connectSymbols, linkNodes, omitSymbols, placeSymbol } from "./canvas";
-import { addLineCorner, arrange, arrowOnScreen, arrowSeat, arrowTowardScreen, bendFromCorner, bendFromMove, bindFlowLine, bindFlowSymbol, bindTarget, blankFlow, buildSheet, canonicalizeSequencers, centerPortsOnMove, dragLineCorner, edgeRoute, pinOpenRoutes, emptyDocument, exampleDocument, fieldForConnection, fieldForNode, boxForPercent, clampFont, flowStory, lockToCenter, nestHosts, nextQuarter, paintLayers, symbolPercent, parseMifaDocument, pathForFlows, previewPath, quarterBox, removeLineCorner, resizeBox, resizeSheet, scaledBox, seatLineIcon, slideLineEnd, straightenConnection, strokeAround, unlockNodes, type SheetNode } from "./document";
+import { addLineCorner, arrange, arrowOnScreen, arrowSeat, arrowTowardScreen, bendFromCorner, bendFromMove, bindFlowLine, bindFlowSymbol, bindTarget, blankFlow, buildSheet, canonicalizeSequencers, centerPortsOnMove, dragLineCorner, edgeRoute, pinOpenRoutes, emptyDocument, exampleDocument, fieldForConnection, fieldForNode, boxForPercent, clampFont, flowStory, lockToCenter, movePlaced, nestHosts, nextQuarter, paintLayers, symbolPercent, parseMifaDocument, pathForFlows, previewPath, quarterBox, removeLineCorner, resizeBox, resizeSheet, scaledBox, scaledSymbol, seatLineIcon, slideLineEnd, straightenConnection, strokeAround, unlockNodes, type SheetNode } from "./document";
 import { documentToWorkbook, workbookToDocument } from "./excel";
 import { SYMBOL_ART, transportArtwork } from "./symbol-art";
 import { BATCH_COLORS, productionLineMetrics, SEQUENCE_COLORS } from "./symbol-shape";
@@ -684,8 +684,40 @@ describe("MIFA sheet built from the flow register", () => {
     expect(restored.poses?.["dock:1"]).toEqual({ flip: true, turn: 90 });
     expect(restored.icons?.["a>b:material::Forklift"]).toEqual({ x: 4, y: 8, width: 40, height: 24, flip: true, turn: 180 });
     expect(parseMifaDocument(JSON.parse(JSON.stringify(saved)))?.marks?.[0].bold).toBe(true);
+    const sameShape = (next: { width: number; height: number }, prev: { width: number; height: number }) => {
+      const ideal = next.width >= next.height ? (next.width * prev.height) / prev.width : (next.height * prev.width) / prev.height;
+      return Math.abs(Math.min(next.width, next.height) - ideal) <= 1;
+    };
     const grown = scaledBox({ x: 100, y: 100, width: 80, height: 40 }, 2);
     expect(grown).toMatchObject({ x: 64, y: 80, width: 160, height: 80 });
+    const truck = { x: 40, y: 80, width: 72, height: 25 };
+    const larger = scaledBox(truck, 5 / 4);
+    const smaller = scaledBox(truck, 4 / 5);
+    expect(larger.width).toBeGreaterThan(truck.width);
+    expect(larger.height).toBeGreaterThan(truck.height);
+    expect(smaller.width).toBeLessThan(truck.width);
+    expect(smaller.height).toBeLessThan(truck.height);
+    expect(sameShape(larger, truck)).toBe(true);
+    expect(sameShape(smaller, truck)).toBe(true);
+    const dock = scaledBox({ x: 0, y: 0, width: 128, height: 76 }, 4 / 5);
+    const line = scaledBox({ x: 0, y: 0, width: 48, height: 280 }, 5 / 4);
+    expect(dock.width).toBeLessThan(128);
+    expect(dock.height).toBeLessThan(76);
+    expect(sameShape(dock, { width: 128, height: 76 })).toBe(true);
+    expect(line.width).toBeGreaterThan(48);
+    expect(line.height).toBeGreaterThan(280);
+    expect(sameShape(line, { width: 48, height: 280 })).toBe(true);
+    const stretched = scaledSymbol({ x: 40, y: 80, width: 80, height: 40 }, 72, 25, undefined, 4 / 5);
+    expect(stretched.width).not.toBe(80);
+    expect(stretched.height).not.toBe(40);
+    expect(sameShape(stretched, { width: 72, height: 25 })).toBe(true);
+    const typed = boxForPercent({ x: 16, y: 24, width: 72, height: 25 }, 72, undefined, 50);
+    expect(typed.height).toBeLessThan(28);
+    expect(sameShape(typed, truck)).toBe(true);
+    const tiny = scaledBox({ x: 0, y: 0, width: 40, height: 16 }, 4 / 5);
+    expect(tiny.width).toBeLessThan(32);
+    expect(tiny.height).toBeLessThan(16);
+    expect(sameShape(tiny, { width: 40, height: 16 })).toBe(true);
     const turned = quarterBox({ x: 100, y: 100, width: 80, height: 40 }, 0, 90);
     expect(turned.width).toBe(40);
     expect(turned.height).toBe(80);
@@ -726,8 +758,10 @@ describe("MIFA sheet built from the flow register", () => {
     expect(smaller.width).toBe(24);
     const floor = resizeBox("se", start, -200, -200, { minWidth: 16, circle: true });
     expect(floor).toMatchObject({ width: 16, height: 16 });
-    const symbol = resizeBox("se", { x: 0, y: 0, width: 80, height: 60 }, -100, -100);
-    expect(symbol).toMatchObject({ width: 40, height: 40 });
+    const symbol = resizeBox("se", { x: 0, y: 0, width: 80, height: 60 }, -100, -100, { minWidth: 8, minHeight: 8, ratio: 80 / 60 });
+    expect(symbol).toMatchObject({ width: 8, height: 6 });
+    const free = resizeBox("se", { x: 0, y: 0, width: 80, height: 60 }, -100, -100);
+    expect(free).toMatchObject({ width: 40, height: 40 });
     const saved = {
       ...emptyDocument(),
       flows: [blankFlow("1")],
@@ -815,6 +849,16 @@ describe("MIFA sheet built from the flow register", () => {
     const dropped = arrowSeat(tip, { x: 240, y: 160 });
     expect(dropped.x).toBeCloseTo(tip.x);
     expect(dropped.y).toBeLessThan(tip.y);
+  });
+
+  it("steps a symbol by one pixel, and a note by a grid step", () => {
+    const dock = sheet.nodes.find((node) => node.kind === "dock");
+    expect(dock).toBeTruthy();
+    const stepped = movePlaced(doc, { [dock!.id]: dock! }, 1, 0);
+    expect(stepped.positions[dock!.id]).toEqual({ x: dock!.x + 1, y: dock!.y });
+    const mark = { id: "mark-note", symbol: "rectangle" as const, name: "Note", x: 20, y: 30, width: 40, height: 24 };
+    const shifted = movePlaced({ ...doc, marks: [mark] }, { [mark.id]: { x: mark.x, y: mark.y, width: mark.width, height: mark.height } }, 0, -8);
+    expect(shifted.marks?.[0]).toMatchObject({ x: 20, y: 22 });
   });
 
   it("shows the arrow button that matches the head on the sheet", () => {

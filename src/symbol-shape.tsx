@@ -139,18 +139,24 @@ function supplierRoof(width: number, height: number) {
   return points.join("");
 }
 
+/** Stroke stays the line weight at normal size, and thins with the symbol so the fill stays visible. */
+function fittedPen(width: number, height: number) {
+  const shortSide = Math.max(1, Math.min(width, height));
+  return Math.min(PEN, Math.max(0.35, (shortSide / 28) * PEN));
+}
+
 export function VectorArt({ art, width, height, selected = false }: { art: SymbolArt; width: number; height: number; selected?: boolean }) {
   if (art.id === "process-supplier") {
     return (
       <svg width={width} height={height} viewBox={`0 0 ${Math.max(width, 1)} ${Math.max(height, 1)}`} className="overflow-visible">
-        <path d={supplierRoof(width, height)} fill="none" stroke="#000000" strokeWidth={PEN} strokeLinejoin="round" strokeLinecap="round" />
+        <path d={supplierRoof(width, height)} fill="none" stroke="#000000" strokeWidth={fittedPen(width, height)} strokeLinejoin="round" strokeLinecap="round" />
         {selected ? <rect x={0} y={0} width={Math.max(0, width)} height={Math.max(0, height)} fill="none" stroke="#1b4f9c" strokeWidth={PEN} /> : null}
       </svg>
     );
   }
   const bounds = artBounds(art);
   const unit = Math.min(width / Math.max(bounds.width, 1), height / Math.max(bounds.height, 1)) || 1;
-  const pen = PEN / unit;
+  const pen = fittedPen(width, height) / unit;
   const base = import.meta.env.BASE_URL;
   return (
     <svg width={width} height={height} viewBox={`${bounds.x} ${bounds.y} ${bounds.width} ${bounds.height}`} preserveAspectRatio="none" className="overflow-visible">
@@ -163,7 +169,7 @@ export function VectorArt({ art, width, height, selected = false }: { art: Symbo
           d={path.arrow ? sizedArrow(path.d, pen / path.arrow) : path.d}
           fill={path.fill ?? "none"}
           stroke={path.stroke ?? "none"}
-          strokeWidth={path.stroke ? pen : undefined}
+          strokeWidth={path.stroke ? Math.min(path.width > 0 ? path.width : pen, pen) : undefined}
           strokeLinejoin="round"
           strokeLinecap="round"
         />

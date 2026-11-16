@@ -22,8 +22,7 @@ import {
   blankFlow,
   buildSheet,
   canonicalizeSequencers,
-  centerPortsOnMove,
-  pinOpenRoutes,
+  movePlaced,
   lockToCenter,
   unlockNodes,
   edgeRoute,
@@ -47,6 +46,7 @@ import {
   resizeSheet,
   resizeBox,
   scaledBox,
+  scaledSymbol,
   symbolPercent,
   snap,
   SYMBOL_SIZE,
@@ -173,9 +173,20 @@ export function MifaDesigner() {
     origin: MifaDocument;
     moved: boolean;
     circle: boolean;
+    ratio?: number;
     minWidth: number;
     minHeight: number;
   } | null>(null);
+  const nudgeRef = useRef<{
+    origin: MifaDocument;
+    starts: Record<string, { x: number; y: number; width: number; height: number }>;
+    iconStarts: Record<string, { x: number; y: number; width: number; height: number; flip?: boolean; turn?: QuarterTurn; placed?: boolean }>;
+    dx: number;
+    dy: number;
+    moved: boolean;
+    timer: number;
+  } | null>(null);
+  const arrowsDown = useRef(new Set<string>());
   const dragRef = useRef<{
     id: string;
     offsetX: number;
@@ -187,7 +198,7 @@ export function MifaDesigner() {
     starts?: Record<string, { x: number; y: number; width: number; height: number }>;
     iconStarts?: Record<string, { x: number; y: number; width: number; height: number; flip?: boolean; turn?: QuarterTurn; placed?: boolean }>;
   } | null>(null);
-  const marqueeRef = useRef<{ x: number; y: number; moved: boolean; box: { x: number; y: number; width: number; height: number } } | null>(null);
+  const marqueeRef = useRef<{ x: number; y: number; moved: boolean; box: { x: number; y: number; width: number; height: number }; base: string[] } | null>(null);
   const boxesRef = useRef<{ id: string; x: number; y: number; width: number; height: number }[]>([]);
   const bendRef = useRef<{ id: string; index: number; origin: MifaDocument; moved: boolean; x: number; y: number } | null>(null);
   const textOrigin = useRef<MifaDocument | null>(null);
@@ -381,7 +392,7 @@ export function MifaDesigner() {
   }
 
   const clipboard = useRef<{ items: Mark[]; pasteCount: number } | null>(null);
-  const actions = useRef({ undo, redo, removeSelection: () => {}, dismiss: () => {}, copy: (): boolean => false, paste: (): boolean => false });
+  const actions = useRef({ undo, redo, removeSelection: () => {}, dismiss: () => {}, copy: (): boolean => false, paste: (): boolean => false, nudge: (_dx: number, _dy: number): boolean => false, finishNudge: () => {} });
   actions.current.undo = undo;
   actions.current.redo = redo;
   actions.current.removeSelection = () => {
@@ -453,6 +464,78 @@ export function MifaDesigner() {
     setMenu(null);
     return true;
   };
+  actions.current.nudge = (dx: number, dy: number) => {
+    if (mode !== "design" || editingTextId || binding || linkFrom || dragRef.current) return false;
+    const ids = (group.length ? group : selectedNodeId ? [selectedNodeId] : []).filter((id) => !doc.locks?.[id]);
+    if (!ids.length) return false;
+    let burst = nudgeRef.current;
+    if (!burst) {
+      const starts: Record<string, { x: number; y: number; width: number; height: number }> = {};
+      for (const id of ids) {
+        const found = boxesRef.current.find((item) => item.id === id);
+        if (found) starts[id] = found;
+      }
+      if (!Object.keys(starts).length) return false;
+      const moved = new Set(Object.keys(starts).filter((id) => !id.startsWith("mark-") && !id.startsWith("icon:")));
+      const iconStarts: NonNullable<NonNullable<typeof nudgeRef.current>["iconStarts"]> = {};
+      for (const edge of visibleEdges) {
+        if (!moved.has(edge.from) && !moved.has(edge.to)) continue;
+        const prefix = `${edge.id}::`;
+        for (const [key, saved] of Object.entries(doc.icons ?? {})) {
+          if (!key.startsWith(prefix) || saved.placed === false || starts[`icon:${key}`]) continue;
+          iconStarts[key] = saved;
+        }
+      }
+      for (const icon of lineIcons) {
+        const edge = visibleEdges.find((item) => item.id === icon.edgeId);
+        if (!edge || (!moved.has(edge.from) && !moved.has(edge.to))) continue;
+        const key = icon.id.slice(5);
+        if (iconStarts[key] || starts[icon.id]) continue;
+        const saved = doc.icons?.[key];
+        iconStarts[key] = {
+          x: icon.x,
+          y: icon.y,
+          width: icon.width,
+          height: icon.height,
+          ...(icon.flip ? { flip: true } : {}),
+          ...(icon.turn ? { turn: icon.turn } : {}),
+          ...(saved?.placed === true ? { placed: true } : {}),
+        };
+      }
+      burst = { origin: doc, starts, iconStarts, dx: 0, dy: 0, moved: false, timer: 0 };
+      nudgeRef.current = burst;
+    }
+    let nextX = burst.dx + dx;
+    let nextY = burst.dy + dy;
+    for (const box of Object.values(burst.starts)) {
+      nextX = Math.min(sheet.x + sheet.width - box.width - box.x, Math.max(sheet.x - box.x, nextX));
+      nextY = Math.min(sheet.y + sheet.height - box.height - box.y, Math.max(sheet.y - box.y, nextY));
+    }
+    if (nextX === burst.dx && nextY === burst.dy) return burst.moved;
+    burst.dx = nextX;
+    burst.dy = nextY;
+    burst.moved = true;
+    const step = burst;
+    setHistory((current) => ({
+      ...current,
+      present: movePlaced(current.present, step.starts, step.dx, step.dy, {
+        origin: step.origin,
+        iconStarts: step.iconStarts,
+        lanes: (id) => lanes.get(id) ?? 0,
+      }),
+    }));
+    window.clearTimeout(step.timer);
+    step.timer = window.setTimeout(() => actions.current.finishNudge(), 400);
+    return true;
+  };
+  actions.current.finishNudge = () => {
+    const burst = nudgeRef.current;
+    if (!burst) return;
+    window.clearTimeout(burst.timer);
+    nudgeRef.current = null;
+    if (!burst.moved) return;
+    setHistory((current) => ({ past: [...current.past, burst.origin].slice(-50), present: current.present, future: [] }));
+  };
 
   useEffect(() => {
     function onKey(event: KeyboardEvent) {
@@ -474,9 +557,21 @@ export function MifaDesigner() {
         actions.current.removeSelection();
       }
       if (event.key === "Escape") actions.current.dismiss();
+      if (event.key === "ArrowLeft" || event.key === "ArrowRight" || event.key === "ArrowUp" || event.key === "ArrowDown") {
+        if (event.metaKey || event.ctrlKey || event.altKey) return;
+        const step = event.shiftKey ? 8 : 1;
+        const dx = event.key === "ArrowLeft" ? -step : event.key === "ArrowRight" ? step : 0;
+        const dy = event.key === "ArrowUp" ? -step : event.key === "ArrowDown" ? step : 0;
+        if (!actions.current.nudge(dx, dy)) return;
+        arrowsDown.current.add(event.key);
+        event.preventDefault();
+      }
     }
     function onKeyUp(event: KeyboardEvent) {
       if (event.code === "Space") spaceRef.current = false;
+      if (!event.key.startsWith("Arrow")) return;
+      arrowsDown.current.delete(event.key);
+      if (arrowsDown.current.size === 0) actions.current.finishNudge();
     }
     window.addEventListener("keydown", onKey);
     window.addEventListener("keyup", onKeyUp);
@@ -526,7 +621,7 @@ export function MifaDesigner() {
         const dx = (event.clientX - resizing.x) / zoom;
         const dy = (event.clientY - resizing.y) / zoom;
         if (Math.hypot(dx, dy) > 2) resizing.moved = true;
-        const box = fitBox(resizeBox(resizing.handle, resizing.box, dx, dy, { minWidth: resizing.minWidth, minHeight: resizing.minHeight, circle: resizing.circle }), pageRef.current);
+        const box = fitBox(resizeBox(resizing.handle, resizing.box, dx, dy, { minWidth: resizing.minWidth, minHeight: resizing.minHeight, circle: resizing.circle, ratio: resizing.ratio }), pageRef.current);
         setHistory((current) => ({ ...current, present: applyBox(current.present, resizing.id, box) }));
         return;
       }
@@ -607,6 +702,7 @@ export function MifaDesigner() {
         marqueeRef.current = null;
         setMarquee(null);
         if (!band.moved) {
+          if (band.base.length) return;
           setSelectedFlowId(null);
           setSelectedNodeId(null);
           setGroup([]);
@@ -614,7 +710,8 @@ export function MifaDesigner() {
           setLinkFrom(null);
           setArmed(null);
         } else {
-          const hits = boxesRef.current.filter((box) => box.x < band.box.x + band.box.width && box.x + box.width > band.box.x && box.y < band.box.y + band.box.height && box.y + box.height > band.box.y).map((box) => box.id);
+          const found = boxesRef.current.filter((box) => box.x < band.box.x + band.box.width && box.x + box.width > band.box.x && box.y < band.box.y + band.box.height && box.y + box.height > band.box.y).map((box) => box.id);
+          const hits = [...band.base, ...found.filter((id) => !band.base.includes(id))];
           setGroup(hits);
           setSelectedNodeId(hits.length === 1 ? hits[0] : null);
           setSelectedEdgeId(null);
@@ -957,6 +1054,10 @@ export function MifaDesigner() {
       }
     }
     if (edge && useBinding(edge)) return;
+    if (tool === "add") {
+      placeChosen(armed, sheetPoint(event));
+      return;
+    }
     if (tool !== "select") return;
     if (index >= 0 && event.detail >= 2) {
       bendRef.current = null;
@@ -1005,7 +1106,14 @@ export function MifaDesigner() {
     }
     if (tool === "select") {
       const point = sheetPoint(event);
-      marqueeRef.current = { x: point.x, y: point.y, moved: false, box: { x: point.x, y: point.y, width: 0, height: 0 } };
+      const extend = event.shiftKey || event.metaKey || event.ctrlKey;
+      marqueeRef.current = {
+        x: point.x,
+        y: point.y,
+        moved: false,
+        box: { x: point.x, y: point.y, width: 0, height: 0 },
+        base: extend ? (group.length ? group : selectedNodeId ? [selectedNodeId] : []) : [],
+      };
       setMarquee(marqueeRef.current.box);
       return;
     }
@@ -1033,23 +1141,7 @@ export function MifaDesigner() {
       return;
     }
     if (tool === "add") {
-      const nextStamp = armed?.stamp ?? stamp;
-      const flowId = selectedFlowId && node.flowIds.includes(selectedFlowId) ? selectedFlowId : node.flowIds[0];
-      if (armed?.stamp && flowId && STAMPS.find((item) => item.id === nextStamp)?.symbol !== node.symbol) {
-        const placed = retargetNode(doc, node.id, flowId, nextStamp, { x: node.x, y: node.y });
-        commit(() => placed.document);
-        setSelectedFlowId(placed.flowId);
-        setSelectedNodeId(placed.nodeId);
-        setGroup([placed.nodeId]);
-        setArmed(null);
-        setTool("select");
-        return;
-      }
-      setSelectedNodeId(node.id);
-      setGroup([node.id]);
-      setSelectedFlowId(flowId ?? null);
-      setArmed(null);
-      setTool("select");
+      placeChosen(armed, sheetPoint(event));
       return;
     }
     if (tool !== "select") {
@@ -1057,9 +1149,25 @@ export function MifaDesigner() {
       setArmed(null);
     }
     setSelectedEdgeId(null);
+    if (event.shiftKey || event.metaKey || event.ctrlKey) {
+      event.preventDefault();
+      toggleSelection(node.id);
+      return;
+    }
     const point = sheetPoint(event);
     beginMove(node.id, point, { x: node.x, y: node.y, width: node.width, height: node.height });
     event.currentTarget.setPointerCapture(event.pointerId);
+  }
+
+  function toggleSelection(id: string) {
+    const current = group.length ? group : selectedNodeId ? [selectedNodeId] : [];
+    const next = current.includes(id) ? current.filter((item) => item !== id) : [...current, id];
+    setGroup(next);
+    setSelectedNodeId(next.length === 1 ? next[0] : null);
+    setSelectedEdgeId(null);
+    setSelectedFlowId(next.length === 1 ? (sheet.nodes.find((node) => node.id === next[0])?.flowIds[0] ?? null) : null);
+    setLinkFrom(null);
+    setEditingTextId(null);
   }
 
   function beginMove(id: string, point: { x: number; y: number }, box: { x: number; y: number; width: number; height: number }) {
@@ -1122,34 +1230,11 @@ export function MifaDesigner() {
     const starts = drag.starts;
     setHistory((current) => ({
       ...current,
-      present: centerPortsOnMove(
-        {
-          ...current.present,
-          positions: {
-            ...current.present.positions,
-            ...Object.fromEntries(Object.entries(starts).filter(([itemId]) => !itemId.startsWith("mark-") && !itemId.startsWith("icon:")).map(([itemId, box]) => [itemId, { x: box.x + dx, y: box.y + dy }])),
-          },
-          marks: (current.present.marks ?? []).map((mark) => (starts[mark.id] ? { ...mark, x: starts[mark.id].x + dx, y: starts[mark.id].y + dy } : mark)),
-          icons: {
-            ...current.present.icons,
-            ...Object.fromEntries(
-              Object.entries(starts)
-                .filter(([itemId]) => itemId.startsWith("icon:"))
-                .map(([itemId, box]) => {
-                  const key = itemId.slice(5);
-                  const prev = drag.origin.icons?.[key];
-                  return [key, { x: box.x + dx, y: box.y + dy, width: box.width, height: box.height, ...(prev?.flip ? { flip: true } : {}), ...(prev?.turn ? { turn: prev.turn } : {}), placed: true as const }];
-                }),
-            ),
-            ...Object.fromEntries(
-              Object.entries(drag.iconStarts ?? {}).map(([key, box]) => [key, { ...box, x: box.x + dx, y: box.y + dy }]),
-            ),
-          },
-        },
-        Object.keys(starts).filter((id) => !id.startsWith("icon:")),
-        { x: dx, y: dy },
-        pinOpenRoutes(drag.origin, Object.keys(starts).filter((id) => !id.startsWith("icon:")), (id) => lanes.get(id) ?? 0),
-      ),
+      present: movePlaced(current.present, starts, dx, dy, {
+        origin: drag.origin,
+        iconStarts: drag.iconStarts,
+        lanes: (id) => lanes.get(id) ?? 0,
+      }),
     }));
   }
 
@@ -1219,7 +1304,7 @@ export function MifaDesigner() {
   function renderPiece(id: string) {
     const node = sheet.nodes.find((item) => item.id === id);
     if (node) {
-      return (
+  return (
         <div
           key={node.id}
           role="button"
@@ -1231,7 +1316,7 @@ export function MifaDesigner() {
             "pointer-events-auto absolute",
             mode === "design" && linkFrom && linkFrom !== node.id && "cursor-crosshair ring-2 ring-[#1b4f9c]",
             mode === "design" && binding && "cursor-crosshair",
-            mode === "design" && (tool === "text" || tool === "rectangle" || tool === "ellipse") && "cursor-crosshair",
+            mode === "design" && (tool === "add" || tool === "text" || tool === "rectangle" || tool === "ellipse") && "cursor-crosshair",
             mode === "design" && tool === "select" && !linkFrom && !binding && !doc.locks?.[node.id] && "cursor-grab active:cursor-grabbing",
           )}
           style={{
@@ -1271,7 +1356,7 @@ export function MifaDesigner() {
         className={cn(
           mode === "preview" ? "pointer-events-none absolute" : "pointer-events-auto absolute",
           mode === "design" && linkFrom && linkFrom !== mark.id && "cursor-crosshair ring-2 ring-[#1b4f9c]",
-          mode === "design" && (tool === "text" || tool === "rectangle" || tool === "ellipse") && "cursor-crosshair",
+          mode === "design" && (tool === "add" || tool === "text" || tool === "rectangle" || tool === "ellipse") && "cursor-crosshair",
           mode === "design" && tool === "select" && !linkFrom && "cursor-grab active:cursor-grabbing",
         )}
         style={{
@@ -1301,9 +1386,18 @@ export function MifaDesigner() {
             placeBasic(tool, sheetPoint(event));
             return;
           }
+          if (tool === "add") {
+            placeChosen(armed, sheetPoint(event));
+            return;
+          }
           if (tool !== "select") {
             setTool("select");
             setArmed(null);
+          }
+          if (event.shiftKey || event.metaKey || event.ctrlKey) {
+            event.preventDefault();
+            toggleSelection(mark.id);
+            return;
           }
           const width = mark.width ?? SYMBOL_SIZE[mark.symbol].width;
           const height = mark.height ?? SYMBOL_SIZE[mark.symbol].height;
@@ -1389,7 +1483,13 @@ export function MifaDesigner() {
   const flowSymbols = symbolItems.length > 0 && symbolItems.every((item) => !item.id.startsWith("mark-") && !item.id.startsWith("icon:"));
 
   function resizePicked(items: ObjectPick[], factor: number) {
-    commit((current) => items.reduce((next, item) => applyBox(next, item.id, scaledBox(item.box, factor, sheet)), current));
+    commit((current) => items.reduce((next, item) => applyBox(next, item.id, scaledPick(item, factor)), current));
+  }
+
+  function scaledPick(item: ObjectPick, factor: number) {
+    const laidOut = !item.id.startsWith("mark-") && !item.id.startsWith("icon:");
+    if (laidOut) return scaledBox(item.box, factor, sheet);
+    return scaledSymbol(item.box, item.natural.width, item.natural.height, item.pose.turn, factor, sheet);
   }
 
   function setTextSize(items: ObjectPick[], font: number) {
@@ -1416,7 +1516,13 @@ export function MifaDesigner() {
   }
 
   function setSymbolSize(items: ObjectPick[], percent: number) {
-    commit((current) => items.reduce((next, item) => applyBox(next, item.id, boxForPercent(item.box, item.natural.width, item.pose.turn, percent, sheet)), current));
+    commit((current) =>
+      items.reduce((next, item) => {
+        const laidOut = !item.id.startsWith("mark-") && !item.id.startsWith("icon:");
+        const height = laidOut ? undefined : item.natural.height;
+        return applyBox(next, item.id, boxForPercent(item.box, item.natural.width, item.pose.turn, percent, sheet, height));
+      }, current),
+    );
   }
 
   function flipPicked(items: ObjectPick[]) {
@@ -1492,12 +1598,12 @@ export function MifaDesigner() {
           <Folder />
           <span className="truncate">{archive.folders.find((folder) => folder.id === archive.openFolderId)?.name ?? "MIFAs"}</span>
         </Button>
-        <Input
-          aria-label="MIFA name"
-          value={project.name}
-          onChange={(event) => patchProject("name", event.target.value)}
+          <Input
+            aria-label="MIFA name"
+            value={project.name}
+            onChange={(event) => patchProject("name", event.target.value)}
           className="h-8 w-52 border-transparent px-1 font-medium focus-visible:ring-0"
-        />
+          />
         {notice ? <p className="truncate text-[12px] text-[#5f6368]">{notice}</p> : null}
         <Button variant="ghost" size="icon-sm" aria-label="Undo" title="Undo (⌘Z)" disabled={!history.past.length} onClick={undo}>
           <Undo2 />
@@ -1508,29 +1614,29 @@ export function MifaDesigner() {
         <div className="ml-auto flex items-center gap-1">
           <div className="ml-1 flex items-center gap-0.5 rounded-lg bg-[#e8eaed] p-0.5">
             <Tip label={shareLock ? "This link is for looking only" : "Edit"}>
-              <button
-                type="button"
+            <button
+              type="button"
                 aria-label="Edit"
                 disabled={shareLock}
                 className={cn("flex size-7 items-center justify-center rounded-md", mode === "design" ? "bg-white shadow-sm" : "text-[#5f6368]", shareLock && "cursor-default opacity-40")}
-                onClick={() => {
+              onClick={() => {
                   if (shareLock) return;
-                  setMode("design");
+                setMode("design");
                   setHover(null);
-                }}
-              >
+              }}
+            >
                 <PenLine className="size-4" />
-              </button>
+            </button>
             </Tip>
             <Tip label="Preview">
-              <button
-                type="button"
+            <button
+              type="button"
                 aria-label="Preview"
                 className={cn("flex size-7 items-center justify-center rounded-md", mode === "preview" ? "bg-white shadow-sm" : "text-[#5f6368]")}
-                onClick={() => setMode("preview")}
-              >
+              onClick={() => setMode("preview")}
+            >
                 <Eye className="size-4" />
-              </button>
+            </button>
             </Tip>
           </div>
           <div className="relative" ref={shareRef}>
@@ -1640,44 +1746,45 @@ export function MifaDesigner() {
         onPointerDown={onViewportPointerDown}
       >
         <div style={{ transform: `translate(${view.pan.x + sheet.x * view.zoom}px, ${view.pan.y + sheet.y * view.zoom}px)`, transformOrigin: "0 0" }}>
-          <div
-            ref={sheetRef}
+        <div
+          ref={sheetRef}
             className={cn(
               "relative bg-white shadow-sm select-none",
               mode === "design" && (tool === "add" || tool === "text" || tool === "rectangle" || tool === "ellipse") && "cursor-crosshair",
             )}
-            style={{
-              zoom: view.zoom,
+          style={{
               width: sheetWidth,
               height: sheetHeight,
-              backgroundImage: "radial-gradient(#d5dbe3 1px, transparent 1px)",
-              backgroundSize: "16px 16px",
-            }}
+              transform: `scale(${view.zoom})`,
+              transformOrigin: "0 0",
+            backgroundImage: "radial-gradient(#d5dbe3 1px, transparent 1px)",
+            backgroundSize: "16px 16px",
+          }}
             onPointerDown={onSheetPointerDown}
             onContextMenu={(event) => mode === "design" && openMenu(event, null)}
-          >
-            <TitleBlock project={project} />
+        >
+          <TitleBlock project={project} />
             <div className="absolute inset-0" style={{ transform: `translate(${-sheet.x}px, ${-sheet.y}px)` }}>
             <div className="pointer-events-none absolute inset-0">
               {layers.back.map((id) => renderPiece(id))}
             </div>
-            <svg className="absolute inset-0 z-[1] h-full w-full" style={{ pointerEvents: "none" }}>
-              <defs>
+            <svg className="absolute inset-0 z-[1] h-full w-full overflow-visible" style={{ pointerEvents: "none" }}>
+            <defs>
                 {[...new Set(visibleEdges.map((edge) => lookOf(edge).stroke))].map((color) => (
                   <g key={color}>
                     <marker id={`arrow-end-${markerId(color)}`} markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
                       <path d="M0,0 L8,4 L0,8 Z" fill={color} />
-                    </marker>
+                </marker>
                     <marker id={`arrow-start-${markerId(color)}`} markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto-start-reverse">
                       <path d="M0,0 L8,4 L0,8 Z" fill={color} />
                     </marker>
                   </g>
-                ))}
-              </defs>
+              ))}
+            </defs>
               {visibleEdges.map((edge) => {
                 const from = nodeBox(edge.from);
                 const to = nodeBox(edge.to);
-                if (!from || !to) return null;
+              if (!from || !to) return null;
                 const route = edgeRoute(from, to, doc.bends?.[edge.id], lanes.get(edge.id) ?? 0, sheet);
                 const style = lookOf(edge);
                 const selected = selectedEdgeId === edge.id;
@@ -1686,15 +1793,15 @@ export function MifaDesigner() {
                   route.points,
                   lineIcons.filter((icon) => icon.edgeId === edge.id),
                 );
-                return (
-                  <g
-                    key={edge.id}
-                    style={{ opacity: opacityFor("edge", edge.id), transition: "opacity 140ms ease", pointerEvents: "auto" }}
+              return (
+                <g
+                  key={edge.id}
+                  style={{ opacity: opacityFor("edge", edge.id), transition: "opacity 140ms ease", pointerEvents: "auto" }}
                     onPointerEnter={() => mode === "preview" && setHover({ id: edge.id, label: edge.label || "Line", flowIds: edge.flowIds })}
                     onPointerLeave={() => mode === "preview" && setHover(null)}
-                  >
-                    <path
-                      d={route.path}
+                >
+                  <path
+                    d={route.path}
                       role="button"
                       aria-label={`${edge.kind === "empty" ? "Empty return" : edge.kind === "information" ? "Information" : "Material"} line${edge.label ? `, ${edge.label}` : ""}`}
                       fill="none"
@@ -1709,18 +1816,18 @@ export function MifaDesigner() {
                     {selected ? <path d={drawn || route.path} fill="none" stroke="#1b4f9c" strokeWidth={6} opacity={0.2} style={{ pointerEvents: "none" }} /> : null}
                     <path
                       d={drawn || route.path}
-                      fill="none"
-                      stroke={style.stroke}
+                    fill="none"
+                    stroke={style.stroke}
                       strokeWidth={activePath?.edges.has(edge.id) ? 2.4 / Math.max(view.zoom, 0.05) : 1.7}
                       strokeDasharray={style.dash || undefined}
                       style={{ pointerEvents: "none" }}
                       markerEnd={style.arrow === "end" || style.arrow === "both" ? `url(#arrow-end-${marker})` : undefined}
                       markerStart={style.arrow === "start" || style.arrow === "both" ? `url(#arrow-start-${marker})` : undefined}
-                    />
-                  </g>
-                );
-              })}
-            </svg>
+                  />
+                </g>
+              );
+            })}
+          </svg>
             <div className="pointer-events-none absolute inset-0 z-[2]">
             {layers.front.map((id) => renderPiece(id))}
             </div>
@@ -1740,7 +1847,9 @@ export function MifaDesigner() {
                   event.stopPropagation();
                   event.preventDefault();
                   const shaped = marks.find((mark) => mark.id === selectedNodeId);
+                  const node = sheet.nodes.find((item) => item.id === selectedNodeId);
                   const basic = shaped?.shape === "rectangle" || shaped?.shape === "ellipse";
+                  const stretch = node?.symbol === "production" || shaped?.symbol === "production" || linePattern(shaped?.artwork);
                   resizeRef.current = {
                     id: selectedNodeId,
                     handle,
@@ -1750,8 +1859,9 @@ export function MifaDesigner() {
                     origin: doc,
                     moved: false,
                     circle: shaped?.shape === "ellipse",
-                    minWidth: basic ? 16 : 40,
-                    minHeight: basic ? 16 : 40,
+                    ratio: basic || stretch ? undefined : box.width / Math.max(box.height, 1),
+                    minWidth: basic ? 16 : stretch ? 40 : 8,
+                    minHeight: basic ? 16 : stretch ? 40 : 8,
                   };
                   event.currentTarget.setPointerCapture(event.pointerId);
                 }}
@@ -1829,8 +1939,8 @@ export function MifaDesigner() {
             {lineIcons.map((icon) => (
               <div
                 key={icon.id}
-                role="button"
-                tabIndex={0}
+              role="button"
+              tabIndex={0}
                 aria-label={icon.art.name}
                 className={cn("absolute z-[12]", mode === "design" && tool === "select" && "cursor-grab active:cursor-grabbing")}
                 style={{ left: icon.x, top: icon.y, width: icon.width, height: icon.height, opacity: opacityFor("edge", icon.edgeId) }}
@@ -1839,6 +1949,11 @@ export function MifaDesigner() {
                   if (mode === "design" && (tool === "text" || tool === "rectangle" || tool === "ellipse")) {
                     event.stopPropagation();
                     placeBasic(tool, sheetPoint(event));
+                    return;
+                  }
+                  if (mode === "design" && tool === "add") {
+                    event.stopPropagation();
+                    placeChosen(armed, sheetPoint(event));
                     return;
                   }
                   if (mode !== "design" || (tool !== "select" && !binding)) return;
@@ -1855,18 +1970,23 @@ export function MifaDesigner() {
                   }
                   setSelectedEdgeId(null);
                   setLinkFrom(null);
+                  if (event.shiftKey || event.metaKey || event.ctrlKey) {
+                    event.preventDefault();
+                    toggleSelection(icon.id);
+                    return;
+                  }
                   beginMove(icon.id, sheetPoint(event), icon);
                   event.currentTarget.setPointerCapture(event.pointerId);
                 }}
-                onPointerMove={onNodePointerMove}
-                onPointerUp={onNodePointerUp}
+              onPointerMove={onNodePointerMove}
+              onPointerUp={onNodePointerUp}
               >
                 <Posed width={icon.width} height={icon.height} pose={icon}>
                   <VectorArt art={icon.art} width={innerSize(icon.width, icon.height, icon.turn).width} height={innerSize(icon.width, icon.height, icon.turn).height} selected={selectedNodeId === icon.id || group.includes(icon.id)} />
                 </Posed>
-              </div>
-            ))}
-            <svg className="pointer-events-none absolute inset-0 z-10 h-full w-full">
+            </div>
+          ))}
+          <svg className="pointer-events-none absolute inset-0 z-10 h-full w-full overflow-visible">
               {visibleEdges.map((edge) => {
                 const caption = edge.label
                   .split(" · ")
@@ -1876,27 +1996,27 @@ export function MifaDesigner() {
                 if (!caption) return null;
                 const from = nodeBox(edge.from);
                 const to = nodeBox(edge.to);
-                if (!from || !to) return null;
+              if (!from || !to) return null;
                 const route = edgeRoute(from, to, doc.bends?.[edge.id], lanes.get(edge.id) ?? 0, sheet);
                 const textWidth = Math.max(28, caption.length * 6.4 + 12);
-                return (
-                  <g key={edge.id} transform={`translate(${route.label.x} ${route.label.y})`} style={{ opacity: opacityFor("edge", edge.id) }}>
-                    <rect x={-textWidth / 2} y={-10} width={textWidth} height={18} rx={3} fill="#fff" stroke="#d0d7de" />
-                    <text y={3} textAnchor="middle" fill="#202124" fontSize={11} fontFamily="inherit">
+              return (
+                <g key={edge.id} transform={`translate(${route.label.x} ${route.label.y})`} style={{ opacity: opacityFor("edge", edge.id) }}>
+                  <rect x={-textWidth / 2} y={-10} width={textWidth} height={18} rx={3} fill="#fff" stroke="#d0d7de" />
+                  <text y={3} textAnchor="middle" fill="#202124" fontSize={11} fontFamily="inherit">
                       {caption}
-                    </text>
-                  </g>
-                );
-              })}
-            </svg>
+                  </text>
+                </g>
+              );
+            })}
+          </svg>
             </div>
             <div className="pointer-events-none absolute bottom-4 left-4 flex items-center gap-2 rounded-md border border-[#d0d7de] bg-white/95 px-1.5 py-1">
               <LineGlyph kind="material" title="Material" />
               <LineGlyph kind="information" title="Information" />
               <LineGlyph kind="empty" title="Empty return" />
-            </div>
-            {mode === "design" ? <SheetEdges zoom={view.zoom} onResizeStart={onSheetEdge} /> : null}
           </div>
+            {mode === "design" ? <SheetEdges zoom={view.zoom} onResizeStart={onSheetEdge} /> : null}
+        </div>
         </div>
         <div className="absolute right-3 bottom-3 flex items-center gap-1 rounded-lg border border-[#d0d7de] bg-white p-0.5 shadow-sm">
           <Button variant="ghost" size="icon-sm" aria-label="Zoom out" title="Zoom out" onClick={() => zoomBy(1 / 1.15)}>
@@ -1992,28 +2112,28 @@ export function MifaDesigner() {
 
       {mode === "design" && dataOpen ? (
         <section className="flex h-[300px] shrink-0 flex-col border-t border-[#d0d7de] bg-white">
-          <div className="flex flex-wrap items-end gap-2 border-b border-[#d0d7de] px-3 py-2">
-            <Field label="Plant" value={project.plant} onChange={(value) => patchProject("plant", value)} />
-            <Field label="Shop" value={project.shop} onChange={(value) => patchProject("shop", value)} />
-            <label className="grid gap-0.5 text-[10px] font-medium tracking-wide text-[#5f6368] uppercase">
-              Scenario
-              <select
-                aria-label="Scenario"
-                value={project.scenario}
-                onChange={(event) => patchProject("scenario", event.target.value)}
-                className="h-7 rounded-md border border-[#d0d7de] bg-white px-1.5 text-sm text-[#202124]"
-              >
-                {["Current", "Future", "Ideal"].map((item) => (
-                  <option key={item}>{item}</option>
-                ))}
-              </select>
-            </label>
-            <Field label="veh/h" value={project.rate} onChange={(value) => patchProject("rate", value)} width="w-16" />
-            <Field label="Shifts" value={project.shifts} onChange={(value) => patchProject("shifts", value)} width="w-16" />
-            <Field label="veh/day" value={project.perDay} onChange={(value) => patchProject("perDay", value)} width="w-20" />
-            <Field label="Diversity" value={project.diversity} onChange={(value) => patchProject("diversity", value)} width="w-36" />
-            <Field label="Updated" value={project.updated} onChange={(value) => patchProject("updated", value)} width="w-28" />
-            <div className="ml-auto flex items-center gap-1">
+        <div className="flex flex-wrap items-end gap-2 border-b border-[#d0d7de] px-3 py-2">
+          <Field label="Plant" value={project.plant} onChange={(value) => patchProject("plant", value)} />
+          <Field label="Shop" value={project.shop} onChange={(value) => patchProject("shop", value)} />
+          <label className="grid gap-0.5 text-[10px] font-medium tracking-wide text-[#5f6368] uppercase">
+            Scenario
+            <select
+              aria-label="Scenario"
+              value={project.scenario}
+              onChange={(event) => patchProject("scenario", event.target.value)}
+              className="h-7 rounded-md border border-[#d0d7de] bg-white px-1.5 text-sm text-[#202124]"
+            >
+              {["Current", "Future", "Ideal"].map((item) => (
+                <option key={item}>{item}</option>
+              ))}
+            </select>
+          </label>
+          <Field label="veh/h" value={project.rate} onChange={(value) => patchProject("rate", value)} width="w-16" />
+          <Field label="Shifts" value={project.shifts} onChange={(value) => patchProject("shifts", value)} width="w-16" />
+          <Field label="veh/day" value={project.perDay} onChange={(value) => patchProject("perDay", value)} width="w-20" />
+          <Field label="Diversity" value={project.diversity} onChange={(value) => patchProject("diversity", value)} width="w-36" />
+          <Field label="Updated" value={project.updated} onChange={(value) => patchProject("updated", value)} width="w-28" />
+          <div className="ml-auto flex items-center gap-1">
               <input
                 ref={fileRef}
                 type="file"
@@ -2027,32 +2147,32 @@ export function MifaDesigner() {
               />
               <Button variant="outline" size="icon-sm" className="size-8" title="Import Excel" aria-label="Import Excel" onClick={() => fileRef.current?.click()}>
                 <Upload />
-              </Button>
+            </Button>
               <Button variant="outline" size="icon-sm" className="size-8" title="Export Excel" aria-label="Export Excel" onClick={() => downloadWorkbook(doc)}>
                 <Download />
-              </Button>
+            </Button>
               <Button variant="outline" size="icon-sm" className="size-8" title="Hide the data bar" aria-label="Hide data" onClick={() => setDataOpen(false)}>
                 <PanelBottomClose />
               </Button>
               <span className="mx-1 h-5 w-px bg-[#d0d7de]" />
               <Button variant="outline" size="icon-sm" className="size-8" title="Add flow" aria-label="Add flow" onClick={addFlow}>
                 <Plus />
-              </Button>
-            </div>
+            </Button>
           </div>
-          <div className="min-h-0 flex-1 overflow-auto">
-            <table className="border-collapse text-left text-[12px]">
-              <thead className="sticky top-0 z-10 bg-[#f4f6f8]">
-                <tr>
-                  {FLOW_GROUPS.map((group) => (
-                    <th key={group.name} colSpan={group.count} className="border-r border-b border-[#d0d7de] px-2 py-1 text-[10px] font-semibold tracking-wide text-[#5f6368] uppercase">
-                      {group.name}
-                    </th>
-                  ))}
-                  <th className="border-b border-[#d0d7de]" />
-                </tr>
-                <tr>
-                  {FLOW_COLUMNS.map((column) => (
+        </div>
+        <div className="min-h-0 flex-1 overflow-auto">
+          <table className="border-collapse text-left text-[12px]">
+            <thead className="sticky top-0 z-10 bg-[#f4f6f8]">
+              <tr>
+                {FLOW_GROUPS.map((group) => (
+                  <th key={group.name} colSpan={group.count} className="border-r border-b border-[#d0d7de] px-2 py-1 text-[10px] font-semibold tracking-wide text-[#5f6368] uppercase">
+                    {group.name}
+                  </th>
+                ))}
+                <th className="border-b border-[#d0d7de]" />
+              </tr>
+              <tr>
+                {FLOW_COLUMNS.map((column) => (
                     <th
                       key={column.key}
                       title={column.header}
@@ -2061,16 +2181,16 @@ export function MifaDesigner() {
                         tableFocus.column === column.key && "bg-[#c6dafc] text-[#174ea6]",
                       )}
                     >
-                      {column.short}
-                    </th>
-                  ))}
-                  <th className="border-b border-[#d0d7de] px-2 py-1" />
-                </tr>
-              </thead>
-              <tbody>
-                {doc.flows.map((flow) => {
+                    {column.short}
+                  </th>
+                ))}
+                <th className="border-b border-[#d0d7de] px-2 py-1" />
+              </tr>
+            </thead>
+            <tbody>
+              {doc.flows.map((flow) => {
                   const rowOn = tableFocus.flows.includes(flow.id);
-                  return (
+                return (
                     <tr
                       key={flow.id}
                       className={cn(rowOn && "bg-[#e8f0fe]")}
@@ -2101,7 +2221,7 @@ export function MifaDesigner() {
                               binding?.flowId === flow.id && binding.column === column.key && "bg-[#d2e3fc]",
                             )}
                           >
-                            <FlowCell flow={flow} column={column.key} onChange={(value) => patchFlow(flow.id, column.key, value)} />
+                        <FlowCell flow={flow} column={column.key} onChange={(value) => patchFlow(flow.id, column.key, value)} />
                             {mode === "design" && bindTarget(column.key) ? (
                               <Tip label="Bind to a symbol">
                                 <button
@@ -2131,23 +2251,23 @@ export function MifaDesigner() {
                                 </button>
                               </Tip>
                             ) : null}
-                          </td>
+                      </td>
                         );
                       })}
-                      <td className="border-b border-[#e6e9ed] px-1">
+                    <td className="border-b border-[#e6e9ed] px-1">
                         <Tip label="Delete flow">
                           <button type="button" aria-label="Delete flow" className="flex size-6 items-center justify-center rounded text-[#c5221f] hover:bg-[#c5221f]/10" onClick={() => deleteFlow(flow.id)}>
                             <Trash2 className="size-3.5" />
-                          </button>
+                      </button>
                         </Tip>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        </section>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </section>
       ) : mode === "design" ? (
         <div className="flex h-10 shrink-0 items-center justify-end border-t border-[#d0d7de] bg-white px-3">
           <Button variant="outline" size="icon-sm" className="size-8" title="Show the data bar" aria-label="Show data" onClick={() => setDataOpen(true)}>
